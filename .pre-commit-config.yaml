@@ -15,6 +15,15 @@
 #
 # Enable with:  pre-commit install
 files: '^(actoris_harena/(__init__\.py|recording/|training/|analysis/|policies/|deploy/|web/|rigs\.py|cli\.py)|test/rig/)'
+
+# The four ported policies are upstream LeRobot modules MOVED here, not
+# rewritten, and they are deliberately byte-comparable to their source: that is
+# what lets `tool/port_policies.py --check` re-derive them, and what guarantees a
+# checkpoint trained by either implementation loads into the other. Reformatting
+# them to this repo's black profile would destroy both properties for no gain.
+# Code we actually write -- policies/{common,flowmatch,dreamzero,*_crop}/ -- is
+# linted like everything else.
+exclude: '^actoris_harena/policies/(act|diffusion|pi05|fastwam)/'
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.4.0

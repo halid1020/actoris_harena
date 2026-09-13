@@ -27,6 +27,7 @@ is the pointer back.
 | `web/{roots_api,lifecycle_api,projects_api,training_api}.py`, `recording/monitor_wire.py` | stage 4 | `0c544e0` (`harena-migration`) |
 | `rigs.py`, `cli.py`, `web/console.py` | stage 4 | new here |
 | `recording/episode_recorder.py` (with `ObservationBuilder`/`TimedFrameSource`) | stage 3m | `a532cf8` (`develop`) |
+| `policies/*` (9 policies), `tool/port_policies.py`, `tool/measure_tactile_border.py` | stage 5 | `d22de3a` (`develop`) |
 
 To read the history of any file here, find its former path under `src/common/`
 in that repository and run `git log --follow` on it there.

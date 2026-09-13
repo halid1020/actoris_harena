@@ -32,7 +32,7 @@ _PROBE := import numpy, aiohttp, cv2, yaml, actoris_harena
 PYTHON := $(firstword $(foreach p,$(CANDIDATES),\
     $(shell $(p) -c "$(_PROBE)" >/dev/null 2>&1 && echo $(p))))
 
-.PHONY: test test-unit lint check-python
+.PHONY: test test-unit test-integration lint check-python
 
 check-python:
 	@if [ -z "$(PYTHON)" ]; then \
@@ -47,11 +47,18 @@ check-python:
 	  exit 1; \
 	fi
 
-test: test-unit
+test: test-unit test-integration
 
 test-unit: check-python
 	@echo "using $(PYTHON)"
 	@$(PYTHON) -m unittest discover -s test/rig -t .
+
+# Slower: builds real models and loads real checkpoints. The one that matters
+# most is test_policy_ports_checkpoints, which compares a port against its
+# upstream twin bit for bit -- that is what makes "the module tree MOVED, it was
+# not rewritten" a checkable claim rather than an intention.
+test-integration: check-python
+	@$(PYTHON) -m unittest discover -s test/integration -t .
 
 # black/isort/flake8/mypy, scoped to the rig pipeline -- see the comment at the
 # head of .pre-commit-config.yaml for why the sim tree is excluded. Run through

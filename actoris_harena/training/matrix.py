@@ -80,7 +80,7 @@ POLICIES: "dict[str, dict[str, Any]]" = {
 }
 
 # The same three policies again, implemented in THIS repo rather than in LeRobot
-# (src/so101_policies/). They are ports -- the upstream module tree moved, not
+# (src/actoris_harena.policies/). They are ports -- the upstream module tree moved, not
 # rewritten -- so they train to the same shape and their checkpoints are
 # interchangeable with the originals; test/unit/test_policy_ports.py and
 # test/integration/test_policy_ports_checkpoints.py hold them to that. They take
@@ -89,21 +89,21 @@ POLICIES: "dict[str, dict[str, Any]]" = {
 #
 # `local` marks a policy this repo defines. It changes only what an unavailable
 # one is told to do about it: bumping LeRobot cannot fix a module that lives here.
-# so101_fastwam is the odd one: its twin is not in the installed LeRobot at all,
+# harena_fastwam is the odd one: its twin is not in the installed LeRobot at all,
 # because FastWAM landed upstream after LEROBOT_COMMIT. `fastwam` stays in this
 # table and stays refused by the module probe, which is the honest report -- the
 # port is what can actually be trained today.
 for _ported, _from in (
-    ("so101_act", "act"),
-    ("so101_diffusion", "diffusion"),
-    ("so101_pi05", "pi05"),
-    ("so101_fastwam", "fastwam"),
+    ("harena_act", "act"),
+    ("harena_diffusion", "diffusion"),
+    ("harena_pi05", "pi05"),
+    ("harena_fastwam", "fastwam"),
 ):
     POLICIES[_ported] = {
         **POLICIES[_from],
         "local": True,
         "ported_from": _from,
-        "module": f"so101_policies.{_from}",
+        "module": f"actoris_harena.policies.{_from}",
     }
 del _ported, _from
 
@@ -113,14 +113,14 @@ del _ported, _from
 # between them measures the world-modelling objective with the rest held fixed.
 # Small enough to train from scratch in hours, hence a step count between ACT's
 # and pi0.5's rather than either.
-POLICIES["so101_flowmatch"] = {
+POLICIES["harena_flowmatch"] = {
     "steps": 60000,
     "batch": 16,
     "hours": 24,
     "scratch": True,
     "max_cameras": None,
     "local": True,
-    "module": "so101_policies.flowmatch",
+    "module": "actoris_harena.policies.flowmatch",
 }
 
 # The world action model. Jointly predicts future video and actions under one
@@ -128,14 +128,14 @@ POLICIES["so101_flowmatch"] = {
 # pair rather than only from what an action label reveals. A video target makes
 # each step dearer than a plain policy's, hence the smaller batch, and it is
 # trained from scratch, hence the step count.
-POLICIES["so101_dreamzero"] = {
+POLICIES["harena_dreamzero"] = {
     "steps": 80000,
     "batch": 8,
     "hours": 36,
     "scratch": True,
     "max_cameras": None,
     "local": True,
-    "module": "so101_policies.dreamzero",
+    "module": "actoris_harena.policies.dreamzero",
 }
 
 # The supervisor's reading of the Grad-CAM figures: the policy attends to the
@@ -145,9 +145,9 @@ POLICIES["so101_dreamzero"] = {
 # same batch. Holding the budget fixed is not tidiness: `hpc/runs.tsv` requires
 # it across an ablation, or capacity confounds input.
 for _crop, _twin in (
-    ("so101_act_crop", "so101_act"),
-    ("so101_diffusion_crop", "so101_diffusion"),
-    ("so101_pi05_crop", "so101_pi05"),
+    ("harena_act_crop", "harena_act"),
+    ("harena_diffusion_crop", "harena_diffusion"),
+    ("harena_pi05_crop", "harena_pi05"),
 ):
     POLICIES[_crop] = {
         **POLICIES[_twin],
@@ -156,7 +156,7 @@ for _crop, _twin in (
         # NOT `ported_from`: these are not ports, and the port tests would then
         # demand a byte-identical upstream file that does not exist.
         "ported_from": None,
-        "module": f"so101_policies.{_crop.removeprefix('so101_')}",
+        "module": f"actoris_harena.policies.{_crop.removeprefix('harena_')}",
     }
 del _crop, _twin
 
@@ -175,8 +175,8 @@ PORTED_FROM = {
 #: carries along this map: a port is the same model as its twin, and a cropped
 #: variant is the same model reading an input of the same SHAPE (the crop
 #: resizes back), so neither changes what a machine can hold. Chased
-#: transitively, because `so101_pi05_crop` reaches `pi05` only through
-#: `so101_pi05`.
+#: transitively, because `harena_pi05_crop` reaches `pi05` only through
+#: `harena_pi05`.
 TWIN_OF = {
     name: (spec.get("ported_from") or spec.get("crop_of"))
     for name, spec in POLICIES.items()
@@ -240,7 +240,7 @@ def unavailable_message(policy: str) -> str:
         return (
             f"{policy} is implemented in this repo and its module {module} did "
             "not import. That is a checkout or a PYTHONPATH problem, not a "
-            "LeRobot version: check src/so101_policies/ is present and that "
+            "LeRobot version: check src/actoris_harena.policies/ is present and that "
             "`source setup.sh` has run on the machine that trains."
         )
     have = lerobot_commit()
@@ -356,9 +356,9 @@ def limits_for(dest: "dict[str, Any] | None", policy: str) -> "dict[str, Any]":
     A variant falls back to what it is a variant of, following `TWIN_OF` as far
     as it goes. A port is the same model with the same activations, and a
     cropped variant reads an input of the same shape, so a ceiling measured on
-    one holds for the other -- and without this a `so101_pi05` row on CREATE
+    one holds for the other -- and without this a `harena_pi05` row on CREATE
     resolves to batch 8 and reproduces the OutOfMemoryError that `pi05: batch: 4`
-    was written down to prevent. `so101_pi05_crop` needs two hops to get there.
+    was written down to prevent. `harena_pi05_crop` needs two hops to get there.
     A destination may still name a variant explicitly to override.
     """
     limits = (dest or {}).get("limits") or {}
