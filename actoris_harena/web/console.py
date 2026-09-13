@@ -14,12 +14,16 @@ exist in one environment.
 The rig is chosen in the page. ``/api/console`` says which rigs are known and
 which is selected; ``/api/console/rig`` selects one.
 
-Not served here, and deliberately: the episode browser's playback routes and the
-Collect and Signals tabs. Those still live in each rig repo's own
-``tool/rig_web.py`` -- they reach into that repo's motion model, its sensor view
-and its teleop entry point, and they move behind the agent next. A rig repo's
-console and this one are the same routes either way; only the composition root
-differs.
+The Collect and Signals tabs ARE served here, through ``web/agent_api.py``, which
+proxies every one of their routes to the selected rig's agent. Nothing in this
+process opens a device.
+
+Not served here, and deliberately: the episode browser's PLAYBACK routes. Those
+compose a panel grid per arm, colourise depth from that rig's own RealSense
+metadata and plot its joint channels -- all genuinely shaped by how many arms a
+robot has -- so they stay in each rig repo's ``tool/rig_web.py``. The dataset
+MANAGEMENT half (listing, marking, deleting, merging, compacting) is here, in
+``lifecycle_api``, because none of it depends on what the pictures show.
 """
 
 import os
@@ -30,6 +34,7 @@ from aiohttp import web  # type: ignore[import]
 
 from actoris_harena.outputs import output_root
 from actoris_harena.rigs import Rig
+from actoris_harena.web.agent_api import add_agent_routes
 from actoris_harena.web.jobs import add_job_routes
 from actoris_harena.web.lifecycle_api import add_lifecycle_routes
 from actoris_harena.web.projects_api import add_project_routes
@@ -118,6 +123,12 @@ def build_app(
                     f"them before changing rig"
                 )
             )
+        # Stop the OLD rig's agent before switching. Two agents holding the
+        # same camera is the one way this could waste an operator's time
+        # silently -- the second open succeeds and then delivers nothing.
+        previous = request.app["rig"]
+        if previous is not None and previous != name:
+            request.app["agents"].stop(previous)
         request.app["rig"] = name
         return web.json_response({"rig": name})
 
@@ -135,6 +146,7 @@ def build_app(
     add_project_routes(app)
     add_job_routes(app)
     add_training_routes(app)
+    add_agent_routes(app)
     app.on_startup.append(open_client)
     app.on_cleanup.append(close_client)
     return app
