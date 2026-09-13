@@ -93,3 +93,90 @@ class FrameStore:
 
     def request_shutdown(self) -> None:
         self._shutdown.set()
+
+
+@runtime_checkable
+class TimedFrameSource(Protocol):
+    """Frames looked up BY TIME, which is what a recorder needs.
+
+    Distinct from :class:`FramePublisher`, and the distinction matters. A capture
+    thread publishes the newest frame; a recorder asks what the newest frame WAS
+    at one reference time, so that every stream in a recorded frame is sampled at
+    the same instant rather than being a mix of latest values.
+
+    Each call returns ``(frame, drift_seconds)`` -- the drift being how far the
+    chosen sample sits from the time that was asked for. That number is recorded
+    per frame per stream, because an alignment that is quietly getting worse is
+    otherwise invisible until a policy trains badly.
+    """
+
+    def get_rgb_image_at(
+        self, name: str, t_ref: float
+    ) -> "tuple[np.ndarray, float] | None":
+        """The RGB frame nearest ``t_ref``, and its drift. None if none yet."""
+
+    def get_depth_image_at(
+        self, name: str, t_ref: float
+    ) -> "tuple[np.ndarray, float] | None":
+        """The depth frame nearest ``t_ref``, and its drift. None if none yet."""
+
+    def get_rgb_image_age(self, name: str, now: float) -> "float | None":
+        """Seconds since this stream last delivered, for staleness grading.
+
+        ``now`` is passed in rather than read here so the recorder's whole
+        staleness decision uses ONE clock reading: grading three cameras against
+        three separate `time.monotonic()` calls would let them disagree about
+        which is the stale one.
+        """
+
+    def is_shutdown_requested(self) -> bool:
+        ...
+
+    def request_shutdown(self) -> None:
+        ...
+
+
+@runtime_checkable
+class ObservationBuilder(Protocol):
+    """The part of a recorded frame that is about the ROBOT.
+
+    Everything else a recorder does -- pacing, pausing on a stale camera,
+    sampling images and depth at one reference time, assembling the frame,
+    writing depth beside it, counting, tallying drift -- is the same on any rig.
+    This is the part that is not, and it is three methods.
+
+    Each takes the frame's reference time and the ``drifts`` dict to record into,
+    so a rig reports its own streams' alignment the same way the cameras do.
+    Returning None means "not ready", and the recorder SKIPS THE WHOLE FRAME
+    rather than writing a partial one -- a frame missing a stream is worse than a
+    frame that does not exist, because every count downstream still agrees with
+    it.
+    """
+
+    def state_and_action(
+        self, t_ref: float, drifts: "dict[str, float]"
+    ) -> "tuple[np.ndarray, np.ndarray, bool] | None":
+        """``(state, action, action_fell_back)`` at ``t_ref``.
+
+        ``action_fell_back`` is True when the last commanded action was too stale
+        to use and the measured state stood in for it. The recorder tallies those
+        because they teach a spurious hold.
+        """
+
+    def ee(
+        self, t_ref: float, drifts: "dict[str, float]"
+    ) -> "tuple[np.ndarray, np.ndarray] | None":
+        """``(measured, target)`` end-effector vectors, or None if not recorded."""
+
+    def teleop_active(self) -> bool:
+        """Whether teleoperation drove this frame, for the maskable phase flag."""
+
+    def armed(self) -> bool:
+        """Whether the rig is still enabled to move.
+
+        A rig that was disabled mid-episode -- an e-stop, a released clutch on a
+        leader arm, a torque cut -- stops producing meaningful actions, so the
+        episode in progress is DISCARDED rather than saved short. Saving it would
+        write frames whose action is the measured state, teaching a hold that
+        nobody performed.
+        """
