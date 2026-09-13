@@ -52,8 +52,6 @@ import traceback
 from enum import Enum
 from typing import Any, Callable
 
-import numpy as np
-
 from actoris_harena.recording import features as feat
 from actoris_harena.recording.dataset_edit import (
     commit_episode_metadata,
@@ -133,17 +131,11 @@ class EpisodeRecorder:
         # Optional audible start/stop cue (AudioCue); None = silent. Best-effort:
         # every call is non-blocking and swallows its own errors.
         self.audio_cue = audio_cue
-        # EE-space features (measured pose + projected+constrained target) in
-        # each arm's own base frame. Only in quest/IK mode, where EE exists.
+        # Whether to ask the observation builder for EE-space features. WHAT
+        # they are, and what frame they are in, is the builder's business -- this
+        # used to compute one rig's world-to-base transforms here, which meant a
+        # shared recorder importing a particular robot's sidecar module.
         self.record_ee = record_ee
-        self._world_base_inv: dict = {}
-        if record_ee:
-            from common.recording.sidecar import compute_world_base_transforms
-
-            self._world_base_inv = {
-                side: np.linalg.inv(tf)
-                for side, tf in compute_world_base_transforms().items()
-            }
 
         self._lock = threading.Lock()
         self._state = RecorderState.IDLE

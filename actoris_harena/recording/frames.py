@@ -11,9 +11,12 @@ whatever suits it -- or uses :class:`FrameStore`.
 """
 
 import threading
+import time
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+
+from actoris_harena.sync import TimestampedHistory, select_nearest
 
 
 @runtime_checkable
@@ -180,3 +183,100 @@ class ObservationBuilder(Protocol):
         write frames whose action is the measured state, teaching a hold that
         nobody performed.
         """
+
+
+class TimedFrameStore:
+    """Frames kept with their capture times, so a recorder can ask for an instant.
+
+    :class:`FrameStore` answers "what is the newest frame"; this answers "what
+    was the newest frame AT t_ref, and how far off was it". That second question
+    is what a recorded episode is built from, because every stream in a frame has
+    to be sampled at the same moment or the alignment drifts from frame to frame.
+
+    Satisfies both protocols, so one object is handed to the capture threads and
+    to the recorder. A rig with a richer blackboard of its own (the dual SO-101's
+    ``DualDataManager``) does the same thing and does not need this; a rig without
+    one uses this and is finished.
+
+    THE HISTORY IS BOUNDED BY AGE, not just by length. A camera that stopped
+    delivering must not keep answering with an ancient frame just because nothing
+    newer has arrived -- ``max_age_s`` is what makes such a stream report None,
+    which is what makes the recorder pause instead of recording a frozen picture.
+    """
+
+    def __init__(self, max_age_s: float = 0.5, max_len: int = 256) -> None:
+        self._lock = threading.Lock()
+        self._rgb: "dict[str, TimestampedHistory]" = {}
+        self._depth: "dict[str, TimestampedHistory]" = {}
+        self._max_age_s = float(max_age_s)
+        self._max_len = int(max_len)
+        self._shutdown = threading.Event()
+
+    def _history(self, table: dict, name: str) -> "TimestampedHistory":
+        history = table.get(name)
+        if history is None:
+            history = TimestampedHistory(
+                max_age_s=self._max_age_s, max_len=self._max_len
+            )
+            table[name] = history
+        return history
+
+    # -- FramePublisher ----------------------------------------------------
+    def set_rgb_image(
+        self, rgb: np.ndarray, name: str, t_capture: "float | None" = None
+    ) -> None:
+        stamp = time.monotonic() if t_capture is None else float(t_capture)
+        with self._lock:
+            history = self._history(self._rgb, name)
+        history.append(stamp, rgb)
+
+    def set_depth_image(
+        self, depth16: np.ndarray, name: str, t_capture: "float | None" = None
+    ) -> None:
+        stamp = time.monotonic() if t_capture is None else float(t_capture)
+        with self._lock:
+            history = self._history(self._depth, name)
+        history.append(stamp, depth16)
+
+    def is_shutdown_requested(self) -> bool:
+        return self._shutdown.is_set()
+
+    def request_shutdown(self) -> None:
+        self._shutdown.set()
+
+    # -- TimedFrameSource --------------------------------------------------
+    def get_rgb_image_at(
+        self, name: str, t_ref: float
+    ) -> "tuple[np.ndarray, float] | None":
+        with self._lock:
+            history = self._rgb.get(name)
+        return None if history is None else select_nearest(history.snapshot(), t_ref)
+
+    def get_depth_image_at(
+        self, name: str, t_ref: float
+    ) -> "tuple[np.ndarray, float] | None":
+        with self._lock:
+            history = self._depth.get(name)
+        return None if history is None else select_nearest(history.snapshot(), t_ref)
+
+    def get_rgb_image_age(self, name: str, now: float) -> "float | None":
+        """Seconds since this stream last delivered, or None if it never has."""
+        with self._lock:
+            history = self._rgb.get(name)
+        if history is None:
+            return None
+        latest = history.latest()
+        return None if latest is None else float(now - latest[0])
+
+    # -- the newest frame, for a live view ---------------------------------
+    def get_rgb_image(self, name: str) -> "np.ndarray | None":
+        with self._lock:
+            history = self._rgb.get(name)
+        if history is None:
+            return None
+        latest = history.latest()
+        return None if latest is None else latest[1]
+
+    def rgb_camera_names(self) -> "list[str]":
+        with self._lock:
+            return sorted(self._rgb)
