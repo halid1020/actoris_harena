@@ -225,10 +225,23 @@ class CamTrunkTest(unittest.TestCase):
 
     def test_a_token_model_says_why_rather_than_how(self):
         policy = torch.nn.Module()
-        with self.assertRaises(RuntimeError) as caught:
+        with self.assertRaises(grads.NoFeatureMap) as caught:
             grads.cam_trunks(TrunkInference(policy, ["a"]))
         message = str(caught.exception)
         self.assertIn("integrated gradients", message)
+
+    def test_running_out_of_memory_is_not_a_missing_feature_map(self):
+        """The one confusion this exception type exists to prevent.
+
+        ``torch.cuda.OutOfMemoryError`` subclasses ``RuntimeError``, so a caller
+        that catches the broad type records a full GPU as "Grad-CAM
+        unavailable" -- and a reader takes that to mean the method does not
+        apply to the policy. MEASURED: a diffusion pass sharing a card with a
+        pi0.5 LoRA run wrote numbers, no figures, and no complaint.
+        """
+        self.assertTrue(issubclass(torch.cuda.OutOfMemoryError, RuntimeError))
+        self.assertFalse(issubclass(torch.cuda.OutOfMemoryError, grads.NoFeatureMap))
+        self.assertTrue(issubclass(grads.NoFeatureMap, RuntimeError))
 
 
 class InterleavedSplitTest(unittest.TestCase):
