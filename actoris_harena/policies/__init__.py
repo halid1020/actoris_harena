@@ -44,6 +44,12 @@ from actoris_harena.policies.dreamzero.configuration_dreamzero import (
 from actoris_harena.policies.dreamzero.modeling_dreamzero import HarenaDreamzeroPolicy
 from actoris_harena.policies.fastwam.configuration_fastwam import HarenaFastwamConfig
 from actoris_harena.policies.fastwam.modeling_fastwam import HarenaFastwamPolicy
+from actoris_harena.policies.fastwam_predict.configuration_fastwam_predict import (
+    HarenaFastwamPredictConfig,
+)
+from actoris_harena.policies.fastwam_predict.modeling_fastwam_predict import (
+    HarenaFastwamPredictPolicy,
+)
 from actoris_harena.policies.flowmatch.configuration_flowmatch import (
     HarenaFlowmatchConfig,
 )
@@ -82,6 +88,8 @@ __all__ = [
     "HarenaDreamzeroPolicy",
     "HarenaFastwamConfig",
     "HarenaFastwamPolicy",
+    "HarenaFastwamPredictConfig",
+    "HarenaFastwamPredictPolicy",
     "HarenaFlowmatchConfig",
     "HarenaFlowmatchPolicy",
     "HarenaPi05Config",

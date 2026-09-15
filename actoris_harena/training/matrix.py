@@ -160,6 +160,22 @@ for _crop, _twin in (
     }
 del _crop, _twin
 
+# FastWAM with its predicted future exposed. `wan.modular.infer_joint` decodes
+# both video and action and nothing in the policy API calls it, so the port owns
+# a video prior it cannot be scored on while `harena_dreamzero` can be scored and
+# owns no prior. The subclass renames what FastWAM already does; the model, the
+# budget and the two-camera ceiling are its twin's, because a prediction measured
+# under a different budget would not be a measurement of the same model.
+POLICIES["harena_fastwam_predict"] = {
+    **POLICIES["harena_fastwam"],
+    "local": True,
+    "variant_of": "harena_fastwam",
+    # NOT `ported_from`: the subclass is ours, and the port tests would then
+    # demand a byte-identical upstream file that does not exist.
+    "ported_from": None,
+    "module": "actoris_harena.policies.fastwam_predict",
+}
+
 POLICY_NAMES = tuple(POLICIES)
 
 #: A repo-local policy and the LeRobot one it was ported from. Their checkpoints
@@ -171,17 +187,27 @@ PORTED_FROM = {
     if spec.get("ported_from")
 }
 
+
 #: Every policy that is a variant of another, and which. A measured ceiling
 #: carries along this map: a port is the same model as its twin, and a cropped
 #: variant is the same model reading an input of the same SHAPE (the crop
 #: resizes back), so neither changes what a machine can hold. Chased
 #: transitively, because `harena_pi05_crop` reaches `pi05` only through
 #: `harena_pi05`.
-TWIN_OF = {
-    name: (spec.get("ported_from") or spec.get("crop_of"))
-    for name, spec in POLICIES.items()
-    if spec.get("ported_from") or spec.get("crop_of")
-}
+def _twin_of(spec: dict) -> "str | None":
+    """What this policy is a variant OF, whatever kind of variant it is.
+
+    Three kinds so far and the distinction is kept rather than flattened: a
+    PORT is upstream's model re-registered, a CROP reads a narrower input of the
+    same shape, and a plain VARIANT adds an API its twin lacks. They are the
+    same fact for a ceiling -- none of them changes what a machine can hold --
+    and different facts everywhere else, which is why `ported_from` is set to
+    None on the other two rather than reused for them.
+    """
+    return spec.get("ported_from") or spec.get("crop_of") or spec.get("variant_of")
+
+
+TWIN_OF = {name: _twin_of(spec) for name, spec in POLICIES.items() if _twin_of(spec)}
 
 
 class MatrixError(ValueError):
