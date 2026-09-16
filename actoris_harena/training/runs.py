@@ -75,6 +75,11 @@ CONFIG_BYTES = 200000
 # One eval_sim_policy result. `episodes` is the long part -- one record per
 # rollout -- and the summary this reads is at the top level beside it.
 VAL_BYTES = 100000
+# One prediction.json. It holds four series per camera over the horizon, so it
+# grows with cameras x horizon and not with the length of the run: this rig's
+# five cameras at a sixteen-step horizon come to a few kilobytes. Capped at the
+# same order as a config for the same reason.
+PREDICTION_BYTES = 200000
 READ_TIMEOUT_S = 90.0
 DISCOVER_TIMEOUT_S = 60.0
 
@@ -182,6 +187,29 @@ def cell_path(out_root: str, run: str, cell: str, tree: str = SIM_TREE) -> str:
     return f"{out_root}/{tree}/{run}/{cell}"
 
 
+def train_dir(out_root: str, run: str, policy: str, tree: str = REAL_TREE) -> str:
+    """The directory one policy's checkpoints live in, in either tree."""
+    if tree == REAL_TREE:
+        return f"{out_root}/{tree}/{run}/train/{policy}"
+    return f"{out_root}/{tree}/{run}/{policy}"
+
+
+def prediction_glob(out_root: str, run: str, policy: str, tree: str = REAL_TREE) -> str:
+    """Every place ``tool/eval_world_model.py`` may have left a prediction.json.
+
+    Two, and the difference matters. Given ``--out`` the tool writes where it is
+    told; given nothing it defaults beside the checkpoint it scored, which is
+    ``checkpoints/<step>/prediction/`` -- ``checkpoints/last`` is a symlink, so
+    the file lands under the NUMBERED directory and stays attached to the
+    checkpoint that produced it even after ``last`` has moved on. That is the
+    right place for it and the reason this is a glob rather than a path: a run
+    scored twice has two answers, and which checkpoint each belongs to is in
+    its directory name, not in the file.
+    """
+    train = train_dir(out_root, run, policy, tree)
+    return f"{train}/prediction/prediction.json {train}/checkpoints/*/prediction/prediction.json"
+
+
 def config_path(out_root: str, run: str, policy: str, tree: str = REAL_TREE) -> str:
     """Where the run's resolved configuration is, for the runs table's diff.
 
@@ -201,7 +229,10 @@ def config_path(out_root: str, run: str, policy: str, tree: str = REAL_TREE) -> 
 
 
 def read_command(
-    path: str, config: "str | None" = None, cell: "str | None" = None
+    path: str,
+    config: "str | None" = None,
+    cell: "str | None" = None,
+    prediction: "str | None" = None,
 ) -> str:
     """One command that returns everything needed to draw a run. Pure.
 
@@ -211,11 +242,13 @@ def read_command(
     machine's OWN clock -- which is how staleness is judged, because the
     timestamps inside the log carry no timezone.
 
-    ``config`` and ``cell`` ride along in the SAME command rather than costing
-    a second SSH: the resolved ``train_config.json`` the runs table diffs, and
-    -- for a sim cell only -- the per-checkpoint rollout results
-    ``long_vla_sim.sh`` writes. Both are small and both are optional; a run
-    without them simply has no such section.
+    ``config``, ``cell`` and ``prediction`` ride along in the SAME command
+    rather than costing a second SSH each: the resolved ``train_config.json``
+    the runs table diffs, -- for a sim cell only -- the per-checkpoint rollout
+    results ``long_vla_sim.sh`` writes, and the world model's ``prediction.json``.
+    All are small and all are optional; a run without them simply has no such
+    section, which is the common case -- only a world model has a future to be
+    scored on.
     """
     parts = [
         f"L={path}; "
@@ -247,6 +280,20 @@ def read_command(
             '[ -f "$v" ] && { echo "VAL $v"; head -c '
             + str(VAL_BYTES)
             + ' "$v"; echo; }; '
+            "done"
+        )
+    if prediction:
+        # A glob, and every match is labelled with the file it came from: a run
+        # scored at more than one checkpoint has more than one answer, and the
+        # step is in the path. Unquoted on purpose -- the shell has to expand
+        # it -- which is why the run and policy inside it are name-checked by
+        # the caller rather than escaped here.
+        parts.append(
+            "echo '" + SENTINEL + "prediction'; "
+            f"for p in {prediction}; do "
+            '[ -f "$p" ] && { echo "PRED $p"; head -c '
+            + str(PREDICTION_BYTES)
+            + ' "$p"; echo; }; '
             "done"
         )
     return "; ".join(parts)
@@ -409,11 +456,93 @@ def parse_val_results(text: str) -> "dict[str, Any]":
     return {"series": series, "selected": selected}
 
 
+_PRED_FILE_RE = re.compile(r"^PRED (?P<path>\S+)$")
+_PRED_STEP_RE = re.compile(r"/checkpoints/(?P<step>\d+)/")
+
+
+def parse_predictions(text: str) -> "list[dict[str, Any]]":
+    """``prediction.json`` -> what the panel draws, one entry per checkpoint.
+
+    The reduction is the whole point and it is done HERE rather than in the
+    browser, because the verdict is not a number the file contains. What the
+    file has is PSNR and SSIM per camera per horizon step, and beside each the
+    same measure for the last observed frame repeated. What a reader needs to
+    know is on how many of those steps the model beat holding -- a world model
+    that loses to holding has not learned that camera's dynamics, whatever its
+    PSNR says, and on this rig four of five cameras are gel images that barely
+    move until contact, where a high PSNR means only that nothing happened.
+
+    The step comes from the PATH, because the file does not record it: the tool
+    writes beside the checkpoint it scored, and `checkpoints/<step>/prediction`
+    is the only place the number appears. A prediction written somewhere else
+    with ``--out`` has no step and is reported with none rather than guessed.
+    """
+    import json
+
+    out: "list[dict[str, Any]]" = []
+    current: "str | None" = None
+    buffer: "list[str]" = []
+
+    def flush() -> None:
+        nonlocal current
+        if current is None:
+            return
+        path, current = current, None
+        try:
+            payload = json.loads("\n".join(buffer))
+        except (ValueError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        cameras = {}
+        for camera, values in (payload.get("per_camera") or {}).items():
+            if not isinstance(values, dict):
+                continue
+            model = values.get("psnr") or []
+            held = values.get("psnr_baseline") or []
+            beats = sum(1 for a, b in zip(model, held) if a > b)
+            cameras[camera] = {
+                "psnr": model,
+                "psnr_baseline": held,
+                "ssim": values.get("ssim") or [],
+                "ssim_baseline": values.get("ssim_baseline") or [],
+                "horizon": len(model),
+                "beats": beats,
+            }
+        if not cameras:
+            return
+        found = _PRED_STEP_RE.search(path)
+        out.append(
+            {
+                "path": path,
+                "step": int(found.group("step")) if found else None,
+                "frames": payload.get("frames"),
+                "episodes": payload.get("episodes") or [],
+                "policy": payload.get("policy"),
+                "cameras": cameras,
+            }
+        )
+
+    for line in text.splitlines():
+        header = _PRED_FILE_RE.match(line.strip())
+        if header:
+            flush()
+            current, buffer = header.group("path"), []
+        elif current is not None:
+            buffer.append(line)
+    flush()
+    # Unstepped last: a run scored at several checkpoints should read forwards,
+    # and a `--out` prediction has no place on that axis.
+    out.sort(key=lambda e: (e["step"] is None, e["step"] or 0))
+    return out
+
+
 def read_log(
     dest: "dict[str, Any]",
     path: str,
     config: "str | None" = None,
     cell: "str | None" = None,
+    prediction: "str | None" = None,
 ) -> "dict[str, Any]":
     """Fetch and parse one training log. Blocking; never raises."""
     from actoris_harena.training.progress import (
@@ -423,7 +552,9 @@ def read_log(
         summarise,
     )
 
-    text, problem = run_command(dest, read_command(path, config=config, cell=cell))
+    text, problem = run_command(
+        dest, read_command(path, config=config, cell=cell, prediction=prediction)
+    )
     if problem:
         return {"ok": False, "problem": problem, "path": path}
     sections = parse_sections(text)
@@ -460,6 +591,9 @@ def read_log(
         parsed["series"].update(val["series"])
         parsed["metrics"] = sorted(parsed["series"])
 
+    # Empty for every policy that is not a world model, which is most of them.
+    predictions = parse_predictions(sections.get("prediction") or "")
+
     return {
         "ok": True,
         "path": path,
@@ -472,6 +606,7 @@ def read_log(
         "checkpoints": parsed["checkpoints"],
         "config": parse_config(sections.get("config") or ""),
         "selected": val["selected"],
+        "predictions": predictions,
         "tail": sections.get("tail", "").strip(),
     }
 

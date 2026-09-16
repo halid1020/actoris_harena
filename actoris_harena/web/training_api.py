@@ -54,6 +54,7 @@ from actoris_harena.training.runs import (
     discover,
     log_path,
     out_roots,
+    prediction_glob,
     read_log,
     run_dir_names,
     with_measurements,
@@ -554,6 +555,7 @@ def _progress(
             log_path(root, run, policy, tree),
             config=config_path(root, run, cell or policy, tree),
             cell=cell_path(root, run, cell, tree) if cell else None,
+            prediction=prediction_glob(root, run, cell or policy, tree),
         )
         if result["ok"]:
             return {**result, "dest": name, "run": run, "policy": policy}
