@@ -70,6 +70,18 @@ def target_gripper(chunk, columns=(5, 11)):
 TARGETS: "dict[str, Callable]" = {"norm": target_norm, "gripper": target_gripper}
 
 
+class NoFeatureMap(RuntimeError):
+    """Grad-CAM cannot run on this policy, and no amount of memory would help.
+
+    Distinct from a plain ``RuntimeError`` on purpose. ``torch.cuda.OutOfMemory
+    Error`` IS a ``RuntimeError``, so a caller catching that broad type recorded
+    an OOM as "Grad-CAM unavailable" -- which reads as *this method does not
+    apply to this model*, the one conclusion a reader must not draw from a full
+    GPU. MEASURED: a diffusion pass sharing a card with a pi0.5 LoRA run wrote a
+    deck of numbers and no figures, and said nothing was wrong.
+    """
+
+
 def _grad_of(inference, batch, keys, target):
     """One forward + backward: the gradient of ``target`` at each named key."""
     torch = inference.torch
@@ -236,7 +248,7 @@ def cam_trunks(inference) -> "tuple[list[Any], str]":
         return [backbone], "per_call"
     encoder = getattr(getattr(policy, "diffusion", None), "rgb_encoder", None)
     if encoder is None:
-        raise RuntimeError(
+        raise NoFeatureMap(
             f"no ResNet trunk found on a '{inference.type}' policy. A token model "
             "(pi0.5, the flow-matching policies) has no convolutional feature map "
             "for Grad-CAM to weight; use integrated gradients on it instead."
@@ -287,7 +299,7 @@ def grad_cam(
     names = [k.split(".")[-1] for k in inference.image_keys()]
     per_camera = _cam_activations(inference, activations, len(names), mode)
     if len(per_camera) != len(names):
-        raise RuntimeError(
+        raise NoFeatureMap(
             f"the trunk ran {len(activations)} time(s) and yielded "
             f"{len(per_camera)} map(s) for {len(names)} camera(s) in '{mode}' "
             "mode: the map cannot be matched to a camera"

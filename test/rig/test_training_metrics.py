@@ -17,7 +17,11 @@ import unittest
 from actoris_harena.training import metrics
 from actoris_harena.training.metrics import MetricError
 from actoris_harena.training.progress import build_series, parse_eval_losses, parse_log
-from actoris_harena.training.runs import KEEP_PATTERN, parse_val_results
+from actoris_harena.training.runs import (
+    KEEP_PATTERN,
+    parse_predictions,
+    parse_val_results,
+)
 
 HEAD = (
     "INFO 2026-09-05 10:00:00 ot_train.py:500 {'batch_size': 8,\n"
@@ -235,3 +239,78 @@ class TestTheOldSentinelStillParses(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWorldModelPredictions(unittest.TestCase):
+    """prediction.json, reduced to the verdict a reader needs.
+
+    Built so the answer is known by construction: `central` beats holding on
+    two of three horizon steps and `touch_a` on none of them.
+    """
+
+    PRED = (
+        "PRED /o/run/train/hz/checkpoints/010000/prediction/prediction.json\n"
+        '{"policy": "harena_dreamzero", "frames": 40, "episodes": [58, 59],\n'
+        ' "per_camera": {\n'
+        '   "central": {"psnr": [30.0, 28.0, 26.0],\n'
+        '               "psnr_baseline": [29.0, 27.0, 27.0],\n'
+        '               "ssim": [0.9, 0.8, 0.7],\n'
+        '               "ssim_baseline": [0.8, 0.7, 0.75]},\n'
+        '   "touch_a": {"psnr": [40.0, 39.0, 38.0],\n'
+        '               "psnr_baseline": [44.0, 43.0, 42.0],\n'
+        '               "ssim": [0.99, 0.98, 0.97],\n'
+        '               "ssim_baseline": [0.995, 0.99, 0.985]}}}\n'
+    )
+
+    def test_the_verdict_is_how_many_steps_it_beats_holding(self):
+        [entry] = parse_predictions(self.PRED)
+        self.assertEqual(entry["cameras"]["central"]["beats"], 2)
+        self.assertEqual(entry["cameras"]["central"]["horizon"], 3)
+
+    def test_a_high_psnr_that_loses_to_holding_is_not_a_win(self):
+        # touch_a scores 40 dB and central 30, and touch_a is the FAILURE: a
+        # gel image barely moves until contact, so holding the last frame
+        # scores higher still. Ranking the cameras by PSNR would report the
+        # camera the model has learned nothing about as its best result.
+        [entry] = parse_predictions(self.PRED)
+        self.assertEqual(entry["cameras"]["touch_a"]["beats"], 0)
+        self.assertGreater(
+            entry["cameras"]["touch_a"]["psnr"][0],
+            entry["cameras"]["central"]["psnr"][0],
+        )
+
+    def test_the_step_comes_from_the_path(self):
+        # prediction.json does not record which checkpoint it scored; the
+        # directory it was written beside is the only place the number is.
+        [entry] = parse_predictions(self.PRED)
+        self.assertEqual(entry["step"], 10000)
+
+    def test_a_prediction_written_elsewhere_has_no_step_rather_than_a_guessed_one(self):
+        moved = self.PRED.replace(
+            "/o/run/train/hz/checkpoints/010000/prediction", "/tmp/somewhere"
+        )
+        [entry] = parse_predictions(moved)
+        self.assertIsNone(entry["step"])
+
+    def test_several_checkpoints_read_forwards_whatever_the_glob_gave(self):
+        # A shell glob sorts checkpoints/010000 before checkpoints/002000.
+        early = self.PRED.replace("/010000/", "/002000/")
+        parsed = parse_predictions(self.PRED + early)
+        self.assertEqual([e["step"] for e in parsed], [2000, 10000])
+
+    def test_a_policy_that_predicts_no_future_has_no_section_and_no_entry(self):
+        # Which is most of them: ACT, diffusion and pi0.5 predict actions only.
+        self.assertEqual(parse_predictions(""), [])
+
+    def test_a_truncated_json_is_skipped_rather_than_raising(self):
+        self.assertEqual(
+            parse_predictions('PRED /a/prediction.json\n{"frames": 2\n'), []
+        )
+
+    def test_a_file_with_no_cameras_is_not_an_empty_result(self):
+        # An empty per_camera means the scoring run produced nothing -- every
+        # frame skipped, say. Reporting it as a scored checkpoint with no
+        # cameras would read as "it was scored and had nothing to say".
+        self.assertEqual(
+            parse_predictions('PRED /a/prediction.json\n{"per_camera": {}}\n'), []
+        )
