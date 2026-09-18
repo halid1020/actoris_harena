@@ -107,6 +107,15 @@ class HarenaFastwamPredictPolicy(HarenaFastwamPolicy):
         """
         self.eval()
         infer_kwargs = _batch_to_infer_kwargs(batch=batch, config=self.config)
+        # The scorer loads a WINDOW of states, because `observation_delta_indices`
+        # names the future frames the model is supervised on -- [0, 4, ... 32].
+        # `infer_joint` conditions on a single state, so the window is reduced
+        # to its FIRST entry: index 0 is the current observation, and the last
+        # entry is thirty-two steps into the future. Taking the last would
+        # condition the prediction on what it is supposed to predict.
+        proprio = infer_kwargs.get("proprio")
+        if proprio is not None and proprio.ndim == 3:
+            infer_kwargs["proprio"] = proprio[:, 0]
         infer_kwargs.update(
             num_video_frames=self.config.model_video_frames,
             action_horizon=self.config.action_horizon,
