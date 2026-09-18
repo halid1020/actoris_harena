@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO-101 rig console</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header id="topbar">
+    <span class="brand">SO-101 rig console</span>
+    <button class="tab sel" data-pane="datasets">Datasets</button>
+    <button class="tab" data-pane="collect">Collect</button>
+    <button class="tab" data-pane="signals">Signals</button>
+    <button class="tab" data-pane="training">Training</button>
+    <span class="grow"></span>
+    <button id="rootdir" title="the collection directory — click to change it">…</button>
+  </header>
+  <main>
+    <section class="pane" id="pane-datasets">
+    <div class="col" id="datasets">
+      <h2>Datasets</h2>
+      <div class="bar wrap">
+        <button id="ds-new">New…</button>
+        <button id="ds-merge">Merge…</button>
+        <button id="ds-rename" disabled>Rename</button>
+        <button id="ds-remove" class="danger" disabled>Delete</button>
+      </div>
+      <ul id="ds-list"></ul>
+    </div>
+    <div class="col" id="episodes">
+      <h2 id="ep-title">Recordings</h2>
+      <div class="bar">
+        <label><input type="checkbox" id="all"> all</label>
+        <button id="del-sel" class="danger" disabled>Delete selected</button>
+      </div>
+      <div class="bar damaged" id="damaged-bar" hidden>
+        <span class="grow" id="damaged-text"></span>
+        <button id="repair" hidden>Repair</button>
+      </div>
+      <div class="bar pending" id="pending-bar" hidden>
+        <span class="grow" id="pending-text"></span>
+        <button id="restore">Restore</button>
+        <button id="compact">Remove for good</button>
+      </div>
+      <ul id="ep-list"></ul>
+    </div>
+    <div id="viewer"><p class="muted">Select a recording to play its sensor view.</p></div>
+    </section>
+    <section class="pane" id="pane-collect" hidden>
+      <div class="col" id="session">
+        <h2>Session</h2>
+        <div class="bar"><span class="grow" id="session-state">no session</span></div>
+
+        <div id="session-form" class="pad">
+          <label>Dataset
+            <input id="c-name" list="c-names" autocomplete="off" spellcheck="false">
+          </label>
+          <datalist id="c-names"></datalist>
+          <label>Instruction
+            <input id="c-task" autocomplete="off" placeholder="fold the towel">
+          </label>
+          <fieldset id="c-streams"><legend>Camera streams</legend></fieldset>
+          <label class="row"><input type="checkbox" id="c-depth">
+            central RGB-D (RealSense)</label>
+          <label class="row"><input type="checkbox" id="c-ee" checked>
+            end-effector features</label>
+          <label class="row">Teleoperation
+            <select id="c-input">
+              <option value="quest">Quest headset</option>
+              <option value="leader">leader arms</option>
+            </select>
+          </label>
+          <label class="row"><input type="checkbox" id="c-view">
+            also open the desktop window</label>
+          <p class="muted" id="c-plan"></p>
+          <p class="err" id="c-err"></p>
+          <div class="bar">
+            <button id="c-check">Check</button>
+            <button id="c-start">Start session</button>
+          </div>
+        </div>
+
+        <div id="session-live" class="pad" hidden>
+          <p id="c-running" class="muted"></p>
+          <div class="bar">
+            <button id="c-enable" hidden>Enable arms (Y)</button>
+            <button id="c-episode">Start episode</button>
+            <button id="c-stop" class="danger">Stop session</button>
+            <span class="muted" id="c-keys"></span>
+          </div>
+          <p class="muted" id="c-surface">Everything below that moves an arm
+          stays on the headset or the keyboard at the rig — stand clear before
+          it does.</p>
+        </div>
+
+        <details id="controls" open>
+          <summary>Driving the session</summary>
+          <table class="checks" id="c-controls"></table>
+        </details>
+
+        <details id="preflight">
+          <summary>Rig readiness</summary>
+          <div id="preflight-body" class="pad muted">not checked yet</div>
+        </details>
+        <pre id="session-log" class="log"></pre>
+      </div>
+
+      <div id="live">
+        <div class="bar">
+          <span class="grow muted" id="live-source">no live view</span>
+          <button id="c-preview">Start preview</button>
+        </div>
+        <div class="tiles" id="live-tiles"></div>
+        <div id="live-missing" class="stream-missing" hidden></div>
+        <div id="c-signals">
+          <div class="bar">
+            <span class="grow muted" id="c-teleop"></span>
+            <span class="muted" id="c-drift"></span>
+            <button id="c-arms">Read the arms</button>
+          </div>
+          <table id="c-joints"></table>
+          <p class="muted">Measured joints beside the command last written to
+          the motors, in URDF degrees; the gripper is its open fraction. This is
+          the pair stored as the state and the action of every recorded frame.
+          With no session running, <em>Read the arms</em> opens the follower
+          buses to fill the measured half — torque off, nothing commanded — and
+          lets go of them before a session starts.</p>
+        </div>
+      </div>
+    </section>
+    <section class="pane" id="pane-signals" hidden>
+      <div class="col" id="assignments">
+        <h2>Assignments</h2>
+        <div class="bar">
+          <button id="s-scan">Scan devices</button>
+          <span class="grow muted" id="s-note"></span>
+        </div>
+        <div class="pad" id="s-map"></div>
+      </div>
+      <div id="s-work">
+        <div class="bar">
+          <span class="grow muted" id="s-work-title">Pick a device to identify</span>
+          <button id="s-release" hidden>Release</button>
+        </div>
+        <div class="pad">
+          <h3 class="sub">Cameras</h3>
+          <p class="muted">Show a candidate, press a gel or wave in front of it
+          to see which one it is, then give it a name.</p>
+          <div id="s-cams" class="chips"></div>
+          <div id="s-cam-view" hidden>
+            <figure class="tile"><img id="s-cam-img"><figcaption id="s-cam-cap"></figcaption></figure>
+            <div class="bar wrap" id="s-cam-names"></div>
+          </div>
+
+          <h3 class="sub">Arms</h3>
+          <p class="muted">Open a port, wiggle ONE arm by hand, and watch which
+          joints move. Torque stays off — nothing is commanded.</p>
+          <div id="s-ports" class="chips"></div>
+          <div id="s-ticks" hidden>
+            <table class="checks" id="s-ticks-table"></table>
+            <div class="bar wrap">
+              <button data-role="follower" data-side="right">Follower right</button>
+              <button data-role="follower" data-side="left">Follower left</button>
+              <button data-role="leader" data-side="right">Leader right</button>
+              <button data-role="leader" data-side="left">Leader left</button>
+              <button id="s-rebase">Re-zero</button>
+            </div>
+          </div>
+
+          <h3 class="sub">Depth camera</h3>
+          <div id="s-rs" class="chips"></div>
+          <p class="err" id="s-err"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="pane" id="pane-training" hidden>
+      <nav class="subtabs">
+        <button class="subtab sel" data-view="start">Start Training</button>
+        <button class="subtab" data-view="jobs">Training Jobs</button>
+      </nav>
+
+      <div class="subview" data-view="start">
+      <div class="col" id="training">
+        <h2>Start training</h2>
+        <div class="bar"><span class="grow muted" id="t-state">pick a dataset, some policies and a machine</span></div>
+
+        <div class="pad">
+          <label>Dataset
+            <select id="t-dataset"></select>
+          </label>
+          <p class="muted" id="t-dataset-detail"></p>
+
+          <fieldset id="t-policies"><legend>Policies</legend></fieldset>
+
+          <label>Cameras
+            <input id="t-cameras" value="all" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="muted" id="t-cameras-help"></p>
+
+          <label>Slot map (pi0.5 only)
+            <input id="t-slots" placeholder="- (derive it)" autocomplete="off"
+                   spellcheck="false">
+          </label>
+
+          <div class="bar wrap">
+            <label>Steps <input id="t-steps" size="8" placeholder="default"></label>
+            <label>Batch <input id="t-batch" size="6" placeholder="default"></label>
+            <label>Hours <input id="t-hours" size="4" placeholder="36"></label>
+          </div>
+
+          <label>Machine
+            <select id="t-dest"></select>
+          </label>
+          <p class="muted" id="t-dest-detail"></p>
+          <label class="row"><input type="checkbox" id="t-restage">
+            copy the dataset up again even if it is already there</label>
+          <label class="row" id="t-allow-cpu-row" hidden>
+            <input type="checkbox" id="t-allow-cpu">
+            train on the CPU anyway — it will not fail, it will just never
+            finish</label>
+
+          <table class="checks" id="t-rows"></table>
+          <p class="err" id="t-err"></p>
+          <div class="bar">
+            <button id="t-check">Check</button>
+            <button id="t-reach">Test connection</button>
+            <button id="t-start">Start training</button>
+          </div>
+          <p class="muted">The dataset is copied as it stands, so a collection
+          still being recorded trains on a snapshot — the episode count that
+          went up is shown above and kept with the run.</p>
+        </div>
+      </div>
+
+      </div>
+
+      <div class="subview" data-view="jobs" hidden>
+      <div class="col" id="training-projects">
+        <h2>Projects</h2>
+        <div class="bar"><button id="t-project-new">New project</button></div>
+        <ul class="list" id="t-project-list"></ul>
+        <div class="pad">
+          <p class="muted" id="t-project-detail"></p>
+          <div class="bar wrap" id="t-project-actions" hidden>
+            <button id="t-project-add">Add selected</button>
+            <button id="t-project-remove">Remove selected</button>
+            <button id="t-project-rename">Rename</button>
+            <button class="danger" id="t-project-delete">Delete</button>
+          </div>
+          <p class="muted" id="t-project-missing"></p>
+        </div>
+      </div>
+
+      <div class="col grow" id="training-runs">
+        <h2>Runs</h2>
+        <div class="bar wrap">
+          <button id="t-refresh">Refresh</button>
+          <input id="t-filter" placeholder="filter runs" size="16"
+                 autocomplete="off" spellcheck="false">
+          <label class="row"><input type="checkbox" id="t-logy" checked>
+            log scale</label>
+          <select id="t-xaxis">
+            <option value="step">by step</option>
+            <option value="hours">by hours</option>
+            <option value="elapsed">since start</option>
+          </select>
+          <label class="row" title="exponential moving average; the raw curve stays behind it">
+            smoothing <input type="range" id="t-smooth" min="0" max="95" value="0">
+          </label>
+          <span class="grow muted" id="t-runstate"></span>
+          <button id="t-export" title="what is plotted, as CSV">Export</button>
+        </div>
+        <p class="err" id="t-runs-err"></p>
+        <div class="scroll" id="t-table-wrap">
+          <table class="runs" id="t-runs-table"></table>
+        </div>
+        <div class="pad" id="t-selection">
+          <div id="t-diff"></div>
+          <div id="t-prediction"></div>
+          <div class="panels" id="t-panels"></div>
+        </div>
+        <div class="pad" id="t-runs"></div>
+      </div>
+      </div>
+    </section>
+  </main>
+  <dialog id="dlg-root">
+    <h3>Collection directory</h3>
+    <p class="muted">Everything the Datasets and Collect tabs show lives under
+    this directory. It cannot be changed while a session or a job is running.</p>
+    <div class="bar wrap" id="root-recent"></div>
+    <label>Directory <input id="root-path" autocomplete="off"
+      spellcheck="false"></label>
+    <div class="bar wrap">
+      <button id="root-up">Up</button>
+      <span class="grow muted" id="root-here"></span>
+      <button id="root-use">Open this directory</button>
+    </div>
+    <ul id="root-list" class="picklist"></ul>
+
+    <h4 class="sub">On another machine</h4>
+    <p class="muted">Mounted with sshfs over your own SSH access. Key or agent
+    only — no password is typed here, so the key must already be accepted
+    (<code>ssh-copy-id user@host</code>, and one <code>ssh user@host</code> to
+    learn its host key). Browsing and playback are comfortable over the network;
+    merging or compacting a remote dataset moves every byte across it twice, so
+    that work belongs on the machine holding the drive.</p>
+    <label>Remote directory <input id="root-target" autocomplete="off"
+      spellcheck="false" placeholder="user@host:/mnt/seagate/so101"></label>
+    <div class="bar wrap">
+      <label>Port <input id="root-port" type="number" min="1" step="1"
+        placeholder="22"></label>
+      <label>Key file <input id="root-key" autocomplete="off" spellcheck="false"
+        placeholder="~/.ssh/id_ed25519"></label>
+    </div>
+    <div id="root-mounts"></div>
+    <p class="err" id="root-err"></p>
+    <menu class="bar">
+      <button data-close="dlg-root">Close</button>
+      <button id="root-mount">Mount and open</button>
+    </menu>
+  </dialog>
+
+  <dialog id="dlg-confirm">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <p id="confirm-body"></p>
+    <form method="dialog">
+      <menu class="bar">
+        <button value="no">Cancel</button>
+        <button value="yes" id="confirm-yes" class="danger">Delete</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-new">
+    <h3>New dataset</h3>
+    <p class="muted">A dataset comes into being when the first episode is
+    recorded into it, so this checks the name and hands you the command that
+    starts the session. Starting it from here arrives with the Collect tab.</p>
+    <label>Name <input id="new-name" autocomplete="off" spellcheck="false"></label>
+    <label>Instruction <input id="new-task" autocomplete="off"
+      placeholder="fold the towel"></label>
+    <p class="err" id="new-err"></p>
+    <pre id="new-cmd" hidden></pre>
+    <menu class="bar">
+      <button data-close="dlg-new">Close</button>
+      <button id="new-go">Show the command</button>
+    </menu>
+  </dialog>
+
+  <dialog id="dlg-rename">
+    <h3>Rename dataset</h3>
+    <p class="muted">A dataset's name is its directory name and nothing inside
+    records it, so renaming changes nothing about the recordings.</p>
+    <label>New name <input id="rename-to" autocomplete="off" spellcheck="false"></label>
+    <p class="err" id="rename-err"></p>
+    <menu class="bar">
+      <button data-close="dlg-rename">Cancel</button>
+      <button id="rename-go">Rename</button>
+    </menu>
+  </dialog>
+
+  <dialog id="dlg-merge">
+    <h3>Merge datasets</h3>
+    <p class="muted">Writes a NEW dataset from the ones you tick, in the order
+    they are listed. The sources are kept unless you say otherwise below.</p>
+    <ul id="merge-list" class="picklist"></ul>
+    <label>New dataset <input id="merge-name" autocomplete="off"
+      spellcheck="false"></label>
+    <label class="row"><input type="checkbox" id="merge-drop">
+      delete the sources once the merge has succeeded</label>
+    <p class="err" id="merge-err"></p>
+    <p class="muted">Merging re-encodes every episode, so it runs in the
+    background — watch it in the corner of the page.</p>
+    <menu class="bar">
+      <button data-close="dlg-merge">Close</button>
+      <button id="merge-go">Merge</button>
+    </menu>
+  </dialog>
+
+  <aside id="jobdock" hidden>
+    <button id="jobdock-head">
+      <span class="grow" id="jobdock-line"></span>
+      <span id="jobdock-caret">▴</span>
+    </button>
+    <ul id="jobdock-list" hidden></ul>
+  </aside>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/datasets.js"></script>
+  <script src="/static/lifecycle.js"></script>
+  <script src="/static/jobs.js"></script>
+  <script src="/static/roots.js"></script>
+  <script src="/static/collect.js"></script>
+  <script src="/static/signals.js"></script>
+  <script src="/static/chart.js"></script>
+  <script src="/static/training.js"></script>
+  <script src="/static/training_jobs.js"></script>
+</body></html>

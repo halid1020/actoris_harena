@@ -252,9 +252,35 @@ class MonitorServer:
         print(f"👁  live monitor on http://{self.host}:{self.port}/")
 
     def stop(self) -> None:
-        if self._loop is None:
+        """Close the site before stopping the loop, then join the thread.
+
+        Stopping the loop outright leaves any in-flight request handler pending
+        and asyncio complains about it on the way out -- "Task was destroyed but
+        it is pending!", printed into the session's stdout, which the console
+        tails and an operator reads. It says nothing anybody can act on, and it
+        is the last thing in the log of an otherwise clean session.
+        """
+        loop = self._loop
+        if loop is None:
             return
-        self._loop.call_soon_threadsafe(self._loop.stop)
+
+        # CLEAN UP FIRST, STOP SECOND, and not in one coroutine: a coroutine
+        # that stops its own loop never delivers its future, so waiting on it
+        # times out and the fallback then touches a loop `_serve` has already
+        # closed -- which raises out of here and takes the session's teardown
+        # with it. Two steps, each waited on separately.
+        async def _close_site() -> None:
+            if self._runner is not None:
+                await self._runner.cleanup()
+
+        try:
+            asyncio.run_coroutine_threadsafe(_close_site(), loop).result(timeout=2.0)
+        except Exception:  # noqa: BLE001 - a monitor that will not close is not fatal
+            pass
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError:
+            pass  # already closed; nothing to stop
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 

@@ -28,6 +28,7 @@ MANAGEMENT half (listing, marking, deleting, merging, compacting) is here, in
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import aiohttp  # type: ignore[import]
 from aiohttp import web  # type: ignore[import]
@@ -44,8 +45,13 @@ from actoris_harena.web.roots_api import (
     root_required,
     unmount_own,
 )
+from actoris_harena.web.session_api import add_session_routes
 from actoris_harena.web.training_api import add_training_routes
 from actoris_harena.web.util import preinit_tqdm_lock, revalidate_assets
+
+#: The single-page app. It lives beside this module rather than in a rig,
+#: because the console it draws serves every rig on the machine.
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def _rig_json(rig: Rig) -> "dict":
@@ -70,6 +76,7 @@ def build_app(
     rigs: "list[Rig]",
     collection_dir: "str | None" = None,
     selected: "str | None" = None,
+    monitor_port: int = 8766,
 ) -> web.Application:
     """Compose the console over a set of rigs. Opens no device and no rig."""
     preinit_tqdm_lock()
@@ -84,6 +91,16 @@ def build_app(
     app["job_executor"] = ThreadPoolExecutor(max_workers=1)
     app["jobs"] = {}
     app["destinations_file"] = None
+    # The collection session, built on demand by `session_api.supervisor` once a
+    # rig and a drive are chosen -- it owns a subprocess and must not be
+    # rebuilt under a running one. `roots_api` reads both of these when the
+    # drive changes, and raised KeyError on a console that never set them.
+    app["session"] = None
+    app["session_key"] = None
+    app["monitor_port"] = monitor_port
+    # The dataset cache warmer is the per-rig console's; this one has no
+    # prerender thread, and the key exists so switching drives can clear it.
+    app["prerender_tasks"] = []
 
     app["rigs"] = {rig.name: rig for rig in rigs}
     # A rig may be preselected on the command line, and otherwise the page
@@ -139,6 +156,10 @@ def build_app(
         await a["http"].close()
         unmount_own(a)
 
+    async def handle_index(request: web.Request) -> web.Response:
+        return web.FileResponse(STATIC_DIR / "index.html")
+
+    app.router.add_get("/", handle_index)
     app.router.add_get("/api/console", handle_console)
     app.router.add_post("/api/console/rig", handle_select_rig)
     add_root_routes(app)
@@ -147,6 +168,9 @@ def build_app(
     add_job_routes(app)
     add_training_routes(app)
     add_agent_routes(app)
+    add_session_routes(app)
+    # Last, so a named API route always wins over a file of the same name.
+    app.router.add_static("/static/", STATIC_DIR, name="static")
     app.on_startup.append(open_client)
     app.on_cleanup.append(close_client)
     return app
