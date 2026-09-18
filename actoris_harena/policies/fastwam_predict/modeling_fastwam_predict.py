@@ -15,6 +15,7 @@ only the one method would have failed on the first line of ``evaluate_frame``.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import torch
@@ -116,7 +117,22 @@ class HarenaFastwamPredictPolicy(HarenaFastwamPolicy):
             # video measurement that never looks at the action.
             test_action_with_infer_action=False,
         )
+        # The shared builder assembles arguments for `infer_action`, and
+        # `infer_joint` takes a SUBSET of them -- `compile_action_infer` belongs
+        # to the action path alone and reaches here as an unexpected keyword.
+        # Filtering against the signature keeps this working as the port tracks
+        # upstream, where the two argument lists have drifted before.
+        accepted = set(inspect.signature(self.model.infer_joint).parameters)
+        unknown = sorted(set(kwargs) - accepted)
+        if unknown:
+            # A caller's own keyword is never dropped silently: that would turn
+            # a misspelling into a setting that appears to apply and does not.
+            raise TypeError(
+                f"infer_joint does not take {', '.join(unknown)}; it takes "
+                f"{', '.join(sorted(accepted))}"
+            )
         infer_kwargs.update(kwargs)
+        infer_kwargs = {k: v for k, v in infer_kwargs.items() if k in accepted}
         out = self.model.infer_joint(**infer_kwargs)
         video = out["video"] if isinstance(out, dict) else out[0]
         video = torch.as_tensor(video)

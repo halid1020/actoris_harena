@@ -144,6 +144,70 @@ class ContextArithmeticTest(unittest.TestCase):
         self.assertGreater(config.predict_inference_steps, 0)
 
 
+class InferJointKwargsTest(unittest.TestCase):
+    """What the shared argument builder produces, against what infer_joint takes.
+
+    A scoring run reached a rented H100, loaded a six-billion-parameter model,
+    and died on `infer_joint() got an unexpected keyword argument
+    'compile_action_infer'` -- a setting that belongs to the action path alone.
+    The builder assembles arguments for `infer_action`; `infer_joint` takes a
+    subset of them, and the two lists have drifted before.
+    """
+
+    class Model:
+        """A stand-in whose infer_joint takes the narrower argument list."""
+
+        def __init__(self):
+            self.seen = None
+
+        def infer_joint(
+            self,
+            prompt=None,
+            input_image=None,
+            num_video_frames=1,
+            action_horizon=1,
+            seed=None,
+            test_action_with_infer_action=True,
+        ):
+            self.seen = {
+                "prompt": prompt,
+                "num_video_frames": num_video_frames,
+                "seed": seed,
+            }
+            return {"video": torch.zeros(1, 3, 2, 4, 4)}
+
+    def accepted(self):
+        import inspect
+
+        return set(inspect.signature(self.Model().infer_joint).parameters)
+
+    def test_an_action_only_argument_is_not_passed_through(self):
+        # The exact failure: the builder always emits this key, and infer_joint
+        # has never taken it.
+        self.assertNotIn("compile_action_infer", self.accepted())
+
+    def test_the_arguments_infer_joint_does_take_survive_filtering(self):
+        accepted = self.accepted()
+        kwargs = {
+            "prompt": "fold the garment",
+            "seed": 7,
+            "num_video_frames": 5,
+            "compile_action_infer": True,
+            "text_cfg_scale": 1.0,
+        }
+        filtered = {k: v for k, v in kwargs.items() if k in accepted}
+        self.assertEqual(
+            filtered, {"prompt": "fold the garment", "seed": 7, "num_video_frames": 5}
+        )
+
+    def test_filtering_leaves_a_callable_set_of_arguments(self):
+        model = self.Model()
+        accepted = set(__import__("inspect").signature(model.infer_joint).parameters)
+        kwargs = {"prompt": "p", "seed": 3, "compile_action_infer": False}
+        model.infer_joint(**{k: v for k, v in kwargs.items() if k in accepted})
+        self.assertEqual(model.seen["seed"], 3)
+
+
 class RegistrationTest(unittest.TestCase):
     def test_the_new_name_is_what_the_config_reports(self):
         """Legacy is an alias; draccus reports the FIRST registered name."""
