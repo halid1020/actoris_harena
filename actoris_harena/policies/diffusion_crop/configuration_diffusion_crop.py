@@ -38,6 +38,12 @@ class HarenaDiffusionCropConfig(HarenaDiffusionConfig):
     #: Which cameras are tactile. No camera carries a `tactile` flag anywhere
     #: in this repo, so the set is named rather than inferred.
     tactile_cameras: tuple[str, ...] = field(default_factory=lambda: TACTILE_CAMERAS)
+    #: Resize back to the source size after cropping. True reproduces every
+    #: cropped result measured so far. False leaves the tactile image cropped,
+    #: which is the arm that separates rim removal from the vertical stretch
+    #: resizing applies -- the confound every cropping result in this work
+    #: currently carries.
+    tactile_resize: bool = True
 
 
 # Registered under its former name as well, so a checkpoint written before this

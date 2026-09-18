@@ -23,6 +23,7 @@ from actoris_harena.policies.common.tactile import (
     HarenaTactileCropProcessorStep,
     crop_and_restore,
     crop_box,
+    crop_only,
 )
 
 
@@ -361,6 +362,136 @@ class DefaultsTest(unittest.TestCase):
         config = HarenaActCropConfig(device="cpu")
         self.assertEqual(tuple(config.tactile_crop), tuple(DEFAULT_CROP))
         self.assertEqual(tuple(config.tactile_cameras), TACTILE_CAMERAS)
+
+
+class CropWithoutResizeTest(unittest.TestCase):
+    """The arm that separates rim removal from the stretch resizing applies.
+
+    Every cropping result in this work is a result about two things done at
+    once: the rim is removed AND what remains is stretched back to the original
+    height. This is the flag that does only the first, so the two can be told
+    apart.
+    """
+
+    def test_the_image_really_is_shorter(self):
+        image = torch.zeros(1, 3, 40, 40)
+        self.assertEqual(tuple(crop_only(image, (0.8, 1.0)).shape), (1, 3, 32, 40))
+
+    def test_width_is_untouched_by_a_row_only_crop(self):
+        image = torch.zeros(3, 40, 60)
+        self.assertEqual(crop_only(image, (0.8, 1.0)).shape[-1], 60)
+
+    def test_a_full_fraction_is_still_the_identity(self):
+        image = torch.rand(3, 20, 20)
+        self.assertTrue(torch.equal(crop_only(image, (1.0, 1.0)), image))
+
+    def test_it_removes_the_same_rows_the_resizing_crop_removes(self):
+        # The two differ in what happens AFTER the crop, never in what is cut.
+        image = leaky_frame(height=40, width=40, border=4)
+        top, _, keep_h, _ = crop_box(40, 40, (0.8, 1.0))
+        self.assertTrue(
+            torch.equal(crop_only(image, (0.8, 1.0)), image[..., top : top + keep_h, :])
+        )
+
+    def test_the_step_declares_the_shape_it_produces(self):
+        # A policy built from features that still claimed the source size would
+        # construct its encoder around an image it never receives.
+        from lerobot.configs.types import FeatureType, PolicyFeature
+        from lerobot.utils.constants import OBS_IMAGES
+
+        cameras = ("left_arm_left_gripper",)
+        step = HarenaTactileCropProcessorStep(
+            fraction=(0.8, 1.0), cameras=cameras, resize=False
+        )
+        features = {
+            f"{OBS_IMAGES}.central": PolicyFeature(
+                type=FeatureType.VISUAL, shape=(3, 240, 320)
+            ),
+            f"{OBS_IMAGES}.left_arm_left_gripper": PolicyFeature(
+                type=FeatureType.VISUAL, shape=(3, 240, 320)
+            ),
+        }
+        out = step.transform_features(features)
+        self.assertEqual(out[f"{OBS_IMAGES}.central"].shape, (3, 240, 320))
+        self.assertEqual(
+            out[f"{OBS_IMAGES}.left_arm_left_gripper"].shape, (3, 192, 320)
+        )
+
+    def test_resizing_on_declares_nothing_new(self):
+        from lerobot.configs.types import FeatureType, PolicyFeature
+        from lerobot.utils.constants import OBS_IMAGES
+
+        step = HarenaTactileCropProcessorStep(
+            fraction=(0.8, 1.0), cameras=("left_arm_left_gripper",), resize=True
+        )
+        key = f"{OBS_IMAGES}.left_arm_left_gripper"
+        features = {key: PolicyFeature(type=FeatureType.VISUAL, shape=(3, 240, 320))}
+        self.assertEqual(step.transform_features(features)[key].shape, (3, 240, 320))
+
+    def test_the_setting_is_recorded_so_a_checkpoint_is_served_as_trained(self):
+        step = HarenaTactileCropProcessorStep(fraction=(0.8, 1.0), resize=False)
+        self.assertIs(step.get_config()["resize"], False)
+
+    def test_resizing_back_is_the_default_everywhere(self):
+        # Every result measured so far assumes it, so the flag must be opt-in.
+        self.assertIs(HarenaTactileCropProcessorStep().resize, True)
+        for module, cls in (
+            ("act_crop", "HarenaActCropConfig"),
+            ("diffusion_crop", "HarenaDiffusionCropConfig"),
+            ("pi05_crop", "HarenaPi05CropConfig"),
+        ):
+            imported = importlib.import_module(
+                f"actoris_harena.policies.{module}.configuration_{module}"
+            )
+            config = getattr(imported, cls)(device="cpu")
+            self.assertIs(config.tactile_resize, True, module)
+
+
+class WhichFamiliesCanCropWithoutResizingTest(unittest.TestCase):
+    """MEASURED on a CPU before any of this reached a queue.
+
+    Cropping without resizing leaves the fingertip cameras SHORTER than the
+    overhead one, and the two families answer that differently. The diffusion
+    policy validates its configuration and refuses a set of cameras whose shapes
+    differ; the action-chunking one builds and runs. That is a property of the
+    architectures and not of this rig, so the arm exists for one family only.
+    """
+
+    def config_with_mixed_shapes(self, config_cls):
+        from lerobot.configs.types import FeatureType, PolicyFeature
+        from lerobot.utils.constants import OBS_IMAGES, OBS_STATE
+
+        return config_cls(
+            input_features={
+                OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(12,)),
+                f"{OBS_IMAGES}.central": PolicyFeature(
+                    type=FeatureType.VISUAL, shape=(3, 240, 320)
+                ),
+                f"{OBS_IMAGES}.left_arm_left_gripper": PolicyFeature(
+                    type=FeatureType.VISUAL, shape=(3, 192, 320)
+                ),
+            },
+            output_features={
+                "action": PolicyFeature(type=FeatureType.ACTION, shape=(12,))
+            },
+            device="cpu",
+        )
+
+    def test_the_diffusion_family_refuses_cameras_of_different_shapes(self):
+        from actoris_harena.policies.diffusion_crop.configuration_diffusion_crop import (
+            HarenaDiffusionCropConfig,
+        )
+
+        with self.assertRaises(ValueError) as caught:
+            self.config_with_mixed_shapes(HarenaDiffusionCropConfig).validate_features()
+        self.assertIn("all image shapes to match", str(caught.exception))
+
+    def test_the_action_chunking_family_accepts_them(self):
+        from actoris_harena.policies.act_crop.configuration_act_crop import (
+            HarenaActCropConfig,
+        )
+
+        self.config_with_mixed_shapes(HarenaActCropConfig).validate_features()
 
 
 if __name__ == "__main__":
