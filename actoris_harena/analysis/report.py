@@ -47,16 +47,28 @@ def _figure(width=9.0, height=4.5):
     return plt, plt.subplots(figsize=(width, height))
 
 
-def shade_phases(axis, labels, spans_of) -> None:
-    """Wash the gripper phases behind a time plot, and name them once each."""
+def shade_phases(axis, labels, spans_of, x=None) -> None:
+    """Wash the gripper phases behind a time plot, and name them once each.
+
+    `spans_of` counts in POSITIONS along `labels`, while the curves in front are
+    drawn against whatever x the caller plotted -- a frame number, a time. Pass
+    that same x here and the bands are converted onto it. Without it the bands
+    are drawn at 0, 1, 2, ... and land in the corner of a plot whose x runs to
+    tens of thousands, which is a wrong figure rather than an ugly one: it
+    invites a reader to date a change to the wrong moment.
+    """
     seen = set()
     for phase, start, stop in spans_of(labels):
         ink = PHASE_INK.get(phase, "#00000000")
         if ink.endswith("00"):
             continue
+        left, right = start, stop - 1
+        if x is not None and len(x):
+            left = x[min(start, len(x) - 1)]
+            right = x[min(stop - 1, len(x) - 1)]
         axis.axvspan(
-            start,
-            stop - 1,
+            left,
+            right,
             color=ink,
             lw=0,
             label=phase if phase not in seen else None,
@@ -75,7 +87,7 @@ def contribution_over_time(
     plt, (fig, axis) = _figure(height=5.2)
     ink = colours(list(series))
     if labels and spans_of:
-        shade_phases(axis, labels, spans_of)
+        shade_phases(axis, labels, spans_of, x=frames)
     for name, values in series.items():
         axis.plot(frames, values, label=name, color=ink[name], lw=1.8)
     axis.set_xlabel("frame")
