@@ -18,6 +18,7 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -44,6 +45,31 @@ def image_keys_of(batch: dict[str, Tensor]) -> "list[str]":
         for key in batch
         if key.startswith("observation.images.") and not key.endswith("_is_pad")
     )
+
+
+def decoded_as_tensor(video: Any) -> Tensor:
+    """What ``infer_joint`` decoded, as ``[C, T, H, W]`` floats in ``[0, 1]``.
+
+    The Wan core's ``_decode_latents`` returns a LIST OF PIL IMAGES, one per
+    frame, ``H x W x 3`` in ``0..255`` -- a preview format, not a tensor.
+    ``torch.as_tensor`` cannot read a PIL image at all, and a naive stack would
+    produce ``0..255`` against a dataset frame in ``0..1``, so every PSNR would
+    be scored against the wrong peak and still look like a number. MEASURED on
+    Viking, 2026-09-19: the first run that got this far died here, after the
+    model had denoised.
+
+    A tensor is passed through, so a future port that returns one is not
+    rescaled twice.
+    """
+    if isinstance(video, Tensor):
+        return video
+    frames = [
+        torch.from_numpy(np.asarray(frame, dtype=np.uint8).copy()) for frame in video
+    ]
+    if not frames:
+        raise ValueError("infer_joint decoded no frames")
+    # [T, H, W, C] uint8 -> [C, T, H, W] float in [0, 1].
+    return torch.stack(frames).permute(3, 0, 1, 2).float() / 255.0
 
 
 class HarenaFastwamPredictPolicy(HarenaFastwamPolicy):
@@ -143,8 +169,7 @@ class HarenaFastwamPredictPolicy(HarenaFastwamPolicy):
         infer_kwargs.update(kwargs)
         infer_kwargs = {k: v for k, v in infer_kwargs.items() if k in accepted}
         out = self.model.infer_joint(**infer_kwargs)
-        video = out["video"] if isinstance(out, dict) else out[0]
-        video = torch.as_tensor(video)
+        video = decoded_as_tensor(out["video"] if isinstance(out, dict) else out[0])
         if video.ndim == 4:
             video = video.unsqueeze(0)
         if video.ndim != 5:

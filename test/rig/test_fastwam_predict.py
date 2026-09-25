@@ -24,6 +24,7 @@ from actoris_harena.policies.fastwam_predict.configuration_fastwam_predict impor
 )
 from actoris_harena.policies.fastwam_predict.modeling_fastwam_predict import (
     HarenaFastwamPredictPolicy,
+    decoded_as_tensor,
     image_keys_of,
 )
 
@@ -206,6 +207,66 @@ class InferJointKwargsTest(unittest.TestCase):
         kwargs = {"prompt": "p", "seed": 3, "compile_action_infer": False}
         model.infer_joint(**{k: v for k, v in kwargs.items() if k in accepted})
         self.assertEqual(model.seen["seed"], 3)
+
+
+class DecodedVideoTest(unittest.TestCase):
+    """What the Wan core really hands back, and what the scorer compares it with.
+
+    Every earlier stand-in returned a TENSOR, which is why this reached a rented
+    H100 before anyone noticed: the real ``_decode_latents`` returns a list of
+    PIL images in 0..255, and a dataset frame is a float in 0..1.
+    """
+
+    def real_decode(self, latents_video):
+        """Run the port's own decode, with a VAE whose output is known."""
+        from types import SimpleNamespace
+
+        from actoris_harena.policies.fastwam.wan.modular import FastWAM
+
+        vae = SimpleNamespace(decode=lambda latents, **_: latents)
+        fake = SimpleNamespace(vae=vae, device="cpu")
+        return FastWAM._decode_latents(fake, latents_video)
+
+    def test_the_port_really_decodes_to_images(self):
+        # Pins the premise: if upstream ever returns a tensor, this fails and
+        # the conversion below can be revisited rather than silently doubled.
+        from PIL import Image
+
+        frames = self.real_decode(torch.zeros(1, 3, 2, 4, 6))
+        self.assertIsInstance(frames, list)
+        self.assertIsInstance(frames[0], Image.Image)
+
+    def test_decoded_frames_come_back_in_the_datasets_range(self):
+        # -1 is black and +1 is white in the model's space; a dataset frame
+        # holds those as 0 and 1.
+        latents = torch.stack(
+            [-torch.ones(3, 4, 6), torch.ones(3, 4, 6)], dim=1
+        ).unsqueeze(0)
+        video = decoded_as_tensor(self.real_decode(latents))
+        self.assertEqual(tuple(video.shape), (3, 2, 4, 6))
+        self.assertEqual(video.dtype, torch.float32)
+        self.assertAlmostEqual(float(video[:, 0].max()), 0.0)
+        self.assertAlmostEqual(float(video[:, 1].min()), 1.0, places=2)
+
+    def test_channels_and_time_are_not_confused(self):
+        # A red first frame and a blue second: [C, T, H, W] keeps them apart,
+        # and a wrong permute would smear colour across time.
+        latents = -torch.ones(1, 3, 2, 4, 6)
+        latents[0, 0, 0] = 1.0
+        latents[0, 2, 1] = 1.0
+        video = decoded_as_tensor(self.real_decode(latents))
+        self.assertGreater(float(video[0, 0].mean()), 0.99)
+        self.assertLess(float(video[2, 0].mean()), 0.01)
+        self.assertGreater(float(video[2, 1].mean()), 0.99)
+        self.assertLess(float(video[0, 1].mean()), 0.01)
+
+    def test_a_tensor_is_not_rescaled_twice(self):
+        video = torch.rand(3, 2, 4, 6)
+        self.assertIs(decoded_as_tensor(video), video)
+
+    def test_nothing_decoded_is_refused(self):
+        with self.assertRaises(ValueError):
+            decoded_as_tensor([])
 
 
 class RegistrationTest(unittest.TestCase):
