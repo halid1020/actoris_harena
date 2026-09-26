@@ -89,6 +89,48 @@ class PinningTest(unittest.TestCase):
         self.assertFalse(torch.equal(first, second))
 
 
+class OwnGeneratorTest(unittest.TestCase):
+    """A policy that seeds its own generator from its config, as FastWAM does."""
+
+    class OwnSeeded:
+        def __init__(self):
+            self.torch = torch
+
+            class Config:
+                inference_seed = 42
+
+            class Policy:
+                config = Config()
+
+            self.policy = Policy()
+
+        def chunk_from(self, batch):  # noqa: ARG002
+            seed = self.policy.config.inference_seed
+            generator = torch.Generator().manual_seed(seed)
+            return torch.randn(6, 4, generator=generator).numpy()
+
+    def test_different_seeds_reach_a_policy_that_ignores_the_global_rng(self):
+        # The failure: three seeds, one answer to every digit.
+        inference = self.OwnSeeded()
+        a = sampler.plan(inference, {}, seed=0)
+        b = sampler.plan(inference, {}, seed=1)
+        self.assertFalse((a == b).all())
+
+    def test_one_seed_still_gives_one_answer(self):
+        inference = self.OwnSeeded()
+        self.assertTrue(
+            (
+                sampler.plan(inference, {}, seed=3)
+                == sampler.plan(inference, {}, seed=3)
+            ).all()
+        )
+
+    def test_the_configs_own_seed_is_restored(self):
+        inference = self.OwnSeeded()
+        sampler.plan(inference, {}, seed=7)
+        self.assertEqual(inference.policy.config.inference_seed, 42)
+
+
 class StochasticProbeTest(unittest.TestCase):
     def test_a_drawing_policy_is_detected_from_behaviour(self):
         self.assertTrue(sampler.is_stochastic(FakeInference(), batch={}))
