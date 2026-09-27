@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from lerobot.configs import PreTrainedConfig
 
-from ..common.tactile import DEFAULT_CROP, TACTILE_CAMERAS
+from ..common.tactile import CENTRED, DEFAULT_CROP, TACTILE_CAMERAS
 from ..pi05.configuration_pi05 import HarenaPi05Config
 
 
@@ -34,6 +34,9 @@ class HarenaPi05CropConfig(HarenaPi05Config):
     #: bright rim and the responsive columns are the same pixels -- see
     #: `common/tactile.DEFAULT_CROP` for the per-camera numbers.
     tactile_crop: tuple[float, float] = DEFAULT_CROP
+    #: Centre of the kept box as a (row, column) fraction of the image;
+    #: (0.5, 0.5) is centred, as every crop before the ridge crop was.
+    tactile_crop_centre: tuple[float, float] = CENTRED
 
     #: Which cameras are tactile. No camera carries a `tactile` flag anywhere
     #: in this repo, so the set is named rather than inferred.

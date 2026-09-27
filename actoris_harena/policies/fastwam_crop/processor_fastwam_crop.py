@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from ..common.tactile import HarenaTactileCropProcessorStep
+from ..common.tactile import CENTRED, HarenaTactileCropProcessorStep, as_fractions
 from ..fastwam.processor_fastwam import make_fastwam_pre_post_processors
 from .configuration_fastwam_crop import HarenaFastwamCropConfig
 
@@ -27,6 +27,7 @@ def make_harena_fastwam_crop_pre_post_processors(
     )
     crop = HarenaTactileCropProcessorStep(
         fraction=config.tactile_crop,
+        centre=as_fractions(getattr(config, "tactile_crop_centre", CENTRED)),
         cameras=tuple(config.tactile_cameras),
         tiled=dict(config.tactile_tiled),
     )

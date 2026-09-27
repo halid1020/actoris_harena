@@ -102,6 +102,8 @@ TACTILE_CAMERAS: "tuple[str, ...]" = (
 #: So: crop rows, keep columns. 0.80 sits comfortably inside the 0.62 bound on
 #: the tightest camera and removes the brightest rows on all four.
 DEFAULT_CROP = (0.80, 1.00)
+#: Where the kept box sits, as a (row, column) fraction of the image.
+CENTRED = (0.5, 0.5)
 
 
 def as_fractions(fraction) -> "tuple[float, float]":
@@ -117,11 +119,16 @@ def as_fractions(fraction) -> "tuple[float, float]":
     return (float(height), float(width))
 
 
-def crop_box(height: int, width: int, fraction) -> "tuple[int, int, int, int]":
-    """The centred box keeping the given fractions: ``(top, left, h, w)``.
+def crop_box(
+    height: int, width: int, fraction, centre=CENTRED
+) -> "tuple[int, int, int, int]":
+    """The box keeping the given fractions: ``(top, left, h, w)``.
 
-    Rounded to at least one pixel, so a silly fraction produces a small image
-    rather than an empty tensor and a shape error three modules away.
+    Centred unless ``centre`` -- the box's centre as a ``(row, column)``
+    fraction of the image -- says otherwise; a box that would run off the image
+    is slid back inside it. Rounded to at least one pixel, so a silly fraction
+    produces a small image rather than an empty tensor and a shape error three
+    modules away.
     """
     fh, fw = as_fractions(fraction)
     for value in (fh, fw):
@@ -132,18 +139,27 @@ def crop_box(height: int, width: int, fraction) -> "tuple[int, int, int, int]":
             )
     keep_h = max(1, int(round(height * fh)))
     keep_w = max(1, int(round(width * fw)))
-    return ((height - keep_h) // 2, (width - keep_w) // 2, keep_h, keep_w)
+    cy, cx = as_fractions(centre)
+    if (cy, cx) == CENTRED:
+        # The integer arithmetic every centred result so far was measured with.
+        return ((height - keep_h) // 2, (width - keep_w) // 2, keep_h, keep_w)
+    for value in (cy, cx):
+        if not 0 <= value <= 1:
+            raise ValueError(f"tactile crop centre must be in [0, 1], got {centre!r}")
+    top = min(max(0, int(round(cy * height - keep_h / 2))), height - keep_h)
+    left = min(max(0, int(round(cx * width - keep_w / 2))), width - keep_w)
+    return (top, left, keep_h, keep_w)
 
 
-def crop_and_restore(image: torch.Tensor, fraction) -> torch.Tensor:
-    """Centre-crop and resize straight back, so the shape never changes.
+def crop_and_restore(image: torch.Tensor, fraction, centre=CENTRED) -> torch.Tensor:
+    """Crop (centred by default) and resize straight back, so the shape never changes.
 
     Accepts any leading batch dimensions; the last three are ``(C, H, W)``.
     """
     if min(as_fractions(fraction)) >= 1.0:
         return image
     height, width = image.shape[-2], image.shape[-1]
-    top, left, keep_h, keep_w = crop_box(height, width, fraction)
+    top, left, keep_h, keep_w = crop_box(height, width, fraction, centre)
     cropped = image[..., top : top + keep_h, left : left + keep_w]
     lead = cropped.shape[:-3]
     flat = cropped.reshape(-1, *cropped.shape[-3:])
@@ -153,8 +169,8 @@ def crop_and_restore(image: torch.Tensor, fraction) -> torch.Tensor:
     return resized.reshape(*lead, *resized.shape[-3:]).to(image.dtype)
 
 
-def crop_only(image: torch.Tensor, fraction) -> torch.Tensor:
-    """Centre-crop and leave it cropped, so the shape DOES change.
+def crop_only(image: torch.Tensor, fraction, centre=CENTRED) -> torch.Tensor:
+    """Crop (centred by default) and leave it cropped, so the shape DOES change.
 
     The arm that separates the two things the default crop does at once. Every
     result about cropping in this work is a result about rim removal AND the
@@ -165,12 +181,12 @@ def crop_only(image: torch.Tensor, fraction) -> torch.Tensor:
     if min(as_fractions(fraction)) >= 1.0:
         return image
     height, width = image.shape[-2], image.shape[-1]
-    top, left, keep_h, keep_w = crop_box(height, width, fraction)
+    top, left, keep_h, keep_w = crop_box(height, width, fraction, centre)
     return image[..., top : top + keep_h, left : left + keep_w]
 
 
 def crop_tiles_and_restore(
-    image: torch.Tensor, fraction, rows: int, cols: int
+    image: torch.Tensor, fraction, rows: int, cols: int, centre=CENTRED
 ) -> torch.Tensor:
     """Crop every tile of a composite on its own, then re-tile.
 
@@ -191,7 +207,7 @@ def crop_tiles_and_restore(
         for col in range(cols):
             rs = slice(row * tile_h, (row + 1) * tile_h)
             cs = slice(col * tile_w, (col + 1) * tile_w)
-            out[..., rs, cs] = crop_and_restore(image[..., rs, cs], fraction)
+            out[..., rs, cs] = crop_and_restore(image[..., rs, cs], fraction, centre)
     return out
 
 
@@ -220,10 +236,15 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
     #: tile is cropped about its own centre (see `crop_tiles_and_restore`).
     #: Empty for every policy that reads the fingertips as separate cameras.
     tiled: "dict[str, tuple[int, int]]" = field(default_factory=dict)
+    #: Centre of the kept box, ``(row, column)`` as fractions of the image (of
+    #: each tile, for a composite). Off-centre lets a crop sit to one side of a
+    #: feature, such as the vertical ridge a third of the way across every gel.
+    centre: "tuple[float, float]" = CENTRED
 
     def __post_init__(self):
-        crop_box(64, 64, self.fraction)  # refuse a bad fraction at construction
+        crop_box(64, 64, self.fraction, self.centre)  # refuse a bad box now
         self.fraction = as_fractions(self.fraction)
+        self.centre = as_fractions(self.centre)
         self.cameras = tuple(self.cameras)
         self.tiled = {name: (int(r), int(c)) for name, (r, c) in self.tiled.items()}
         if self.tiled and not self.resize:
@@ -247,12 +268,14 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
                 continue
             grid = self.tiled.get(key.rsplit(".", 1)[-1])
             if grid is not None:
-                out[key] = crop_tiles_and_restore(value, self.fraction, *grid)
+                out[key] = crop_tiles_and_restore(
+                    value, self.fraction, *grid, centre=self.centre
+                )
             elif self._is_tactile(key):
                 out[key] = (
-                    crop_and_restore(value, self.fraction)
+                    crop_and_restore(value, self.fraction, self.centre)
                     if self.resize
-                    else crop_only(value, self.fraction)
+                    else crop_only(value, self.fraction, self.centre)
                 )
         return out
 
@@ -262,6 +285,7 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
             "cameras": list(self.cameras),
             "resize": bool(self.resize),
             "tiled": {name: list(grid) for name, grid in self.tiled.items()},
+            "centre": list(self.centre),
         }
 
     def transform_features(self, features):
@@ -279,6 +303,6 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
             if len(shape) != 3:
                 continue
             channels, height, width = shape
-            _, _, keep_h, keep_w = crop_box(height, width, self.fraction)
+            _, _, keep_h, keep_w = crop_box(height, width, self.fraction, self.centre)
             features[key] = replace(feature, shape=(channels, keep_h, keep_w))
         return features

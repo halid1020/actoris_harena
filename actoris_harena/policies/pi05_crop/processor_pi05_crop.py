@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from ..common.tactile import HarenaTactileCropProcessorStep
+from ..common.tactile import CENTRED, HarenaTactileCropProcessorStep, as_fractions
 from ..pi05.processor_pi05 import make_harena_pi05_pre_post_processors
 from .configuration_pi05_crop import HarenaPi05CropConfig
 
@@ -28,6 +28,7 @@ def make_harena_pi05_crop_pre_post_processors(
     )
     crop = HarenaTactileCropProcessorStep(
         fraction=config.tactile_crop,
+        centre=as_fractions(getattr(config, "tactile_crop_centre", CENTRED)),
         cameras=tuple(config.tactile_cameras),
         resize=bool(getattr(config, "tactile_resize", True)),
     )

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from lerobot.configs import PreTrainedConfig
 
-from ..common.tactile import DEFAULT_CROP, TACTILE_CAMERAS
+from ..common.tactile import CENTRED, DEFAULT_CROP, TACTILE_CAMERAS
 from ..dreamzero.configuration_dreamzero import HarenaDreamzeroConfig
 
 
@@ -25,4 +25,7 @@ class HarenaDreamzeroCropConfig(HarenaDreamzeroConfig):
     #: Fraction of HEIGHT and of WIDTH kept, centred, then resized back. See
     #: `common/tactile.DEFAULT_CROP`; a four-edge crop is ``(0.8, 0.8)``.
     tactile_crop: tuple[float, float] = DEFAULT_CROP
+    #: Centre of the kept box as a (row, column) fraction of the image;
+    #: (0.5, 0.5) is centred, as every crop before the ridge crop was.
+    tactile_crop_centre: tuple[float, float] = CENTRED
     tactile_cameras: tuple[str, ...] = field(default_factory=lambda: TACTILE_CAMERAS)

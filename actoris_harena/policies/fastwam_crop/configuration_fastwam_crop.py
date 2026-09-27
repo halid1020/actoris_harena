@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from lerobot.configs import PreTrainedConfig
 
-from ..common.tactile import DEFAULT_CROP, TACTILE_CAMERAS
+from ..common.tactile import CENTRED, DEFAULT_CROP, TACTILE_CAMERAS
 from ..fastwam.configuration_fastwam import HarenaFastwamConfig
 
 
@@ -26,6 +26,9 @@ class HarenaFastwamCropConfig(HarenaFastwamConfig):
     #: Fraction of each tile's HEIGHT and WIDTH kept, centred, then resized back
     #: into its quadrant. A four-edge crop is ``(0.8, 0.8)``.
     tactile_crop: tuple[float, float] = DEFAULT_CROP
+    #: Centre of the kept box as a (row, column) fraction of the image;
+    #: (0.5, 0.5) is centred, as every crop before the ridge crop was.
+    tactile_crop_centre: tuple[float, float] = CENTRED
     #: Fingertip cameras read on their own, if a run ever passes any.
     tactile_cameras: tuple[str, ...] = field(default_factory=lambda: TACTILE_CAMERAS)
     #: Composite cameras and their tile grid, as `recording.dataset_view` wrote them.

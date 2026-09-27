@@ -60,6 +60,48 @@ class CropGeometryTest(unittest.TestCase):
         self.assertGreaterEqual(min(h, w), 1)
 
 
+class OffCentreBoxTest(unittest.TestCase):
+    """The ridge crop: a box to the right of the gel's vertical ridge."""
+
+    def test_centred_is_exactly_the_old_arithmetic(self):
+        self.assertEqual(
+            crop_box(480, 640, (0.8, 0.8), (0.5, 0.5)), crop_box(480, 640, (0.8, 0.8))
+        )
+
+    def test_the_ridge_crop_keeps_columns_036_to_090(self):
+        top, left, h, w = crop_box(480, 640, (0.8, 0.54), (0.5, 0.63))
+        self.assertEqual((top, h), (48, 384))
+        self.assertAlmostEqual(left / 640, 0.36, places=2)
+        self.assertAlmostEqual((left + w) / 640, 0.90, places=2)
+
+    def test_a_box_past_the_edge_is_slid_back_inside(self):
+        top, left, h, w = crop_box(100, 100, 0.5, (0.5, 1.0))
+        self.assertEqual(left + w, 100)
+
+    def test_a_centre_outside_the_image_is_refused(self):
+        with self.assertRaises(ValueError):
+            crop_box(100, 100, 0.5, (0.5, 1.5))
+
+    def test_the_step_crops_off_centre_and_round_trips(self):
+        from lerobot.processor import ProcessorStepRegistry
+
+        img = torch.zeros(1, 3, 10, 100)
+        img[..., :, :30] = 1.0  # a bright band left of where the box starts
+        step = HarenaTactileCropProcessorStep(fraction=(1.0, 0.5), centre=(0.5, 0.7))
+        key = f"observation.images.{TACTILE_CAMERAS[0]}"
+        out = step.observation({key: img})[key]
+        self.assertEqual(float(out.max()), 0.0)
+        rebuilt = ProcessorStepRegistry.get("so101_tactile_crop")(**step.get_config())
+        self.assertEqual(rebuilt.get_config()["centre"], [0.5, 0.7])
+
+    def test_a_tiled_composite_crops_each_tile_off_centre(self):
+        img = torch.zeros(1, 3, 20, 200)
+        img[..., :, :30] = 1.0  # the left band of the left tiles only
+        img[..., :, 100:130] = 1.0
+        out = crop_tiles_and_restore(img, (1.0, 0.5), 2, 2, centre=(0.5, 0.7))
+        self.assertEqual(float(out.max()), 0.0)
+
+
 class ShapeIsPreservedTest(unittest.TestCase):
     """The whole reason the crop resizes back."""
 
