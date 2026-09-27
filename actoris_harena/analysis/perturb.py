@@ -245,3 +245,49 @@ def ranking(result: "dict[str, Any]") -> "list[tuple[str, float]]":
         ((name, effect["l2"]) for name, effect in result["streams"].items()),
         key=lambda pair: -pair[1],
     )
+
+
+def patch_occlusion(
+    inference,
+    state: np.ndarray,
+    images: "dict[str, np.ndarray]",
+    cameras: "list[str]",
+    grid: "tuple[int, int]" = (10, 10),
+    seed: int = DEFAULT_SEED,
+) -> "dict[str, np.ndarray]":
+    """WHERE in each frame the plan comes from, for any model at all.
+
+    Occlusion at the scale of a patch (Zeiler and Fergus, 2014): each cell of a
+    ``grid`` over the frame is painted with the frame's own mean colour -- the
+    ``mean`` baseline, so brightness stays and structure goes -- and the plan is
+    re-drawn. The cell's value is how far the plan moved (``chunk_delta``'s
+    ``l2``). Grad-CAM needs a convolutional feature map, which pi0.5's vision
+    transformer and the world models' video backbones do not offer; this needs
+    only a forward pass, so every model gets the same map, measured the same way.
+
+    The cells are laid over the RAW frame, before the model's own pre-processor
+    crops anything, so a cropped model's map is in the same coordinates as its
+    uncropped twin's and a cell it never sees scores exactly zero. For a tiled
+    composite (FastWAM's fingertips) pass a grid that is a multiple of the tile
+    grid, so no cell straddles two sensors.
+    """
+    reference = plan_of(inference, state, images, seed)
+    rows, cols = grid
+    maps: "dict[str, np.ndarray]" = {}
+    for camera in cameras:
+        frame = np.asarray(images[camera])
+        height, width = frame.shape[:2]
+        colour = frame.reshape(-1, frame.shape[-1]).mean(axis=0).astype(frame.dtype)
+        values = np.zeros(grid)
+        for row in range(rows):
+            for col in range(cols):
+                top, bottom = row * height // rows, (row + 1) * height // rows
+                left, right = col * width // cols, (col + 1) * width // cols
+                moved = frame.copy()
+                moved[top:bottom, left:right] = colour
+                values[row, col] = chunk_delta(
+                    reference,
+                    plan_of(inference, state, {**images, camera: moved}, seed),
+                )["l2"]
+        maps[camera] = values
+    return maps

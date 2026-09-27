@@ -150,6 +150,29 @@ class OcclusionIsPinnedTest(unittest.TestCase):
         self.assertGreater(result["streams"]["central"]["l2"], 0.0)
 
 
+class PatchOcclusionTest(unittest.TestCase):
+    """Grad-CAM's question for a model with no feature map to weight."""
+
+    def test_the_cell_holding_the_structure_scores_highest(self):
+        inference = DrawingInference(jitter=0.0)
+        state, images = observation()
+        images["tip"] = images["tip"].copy()
+        images["tip"][0, 0] = 1.0  # the only structure in the frame, top-left
+        maps = perturb.patch_occlusion(inference, state, images, ["tip"], (2, 2))
+        self.assertEqual(maps["tip"].shape, (2, 2))
+        # A flat cell still moves a little: the fill is the WHOLE frame's mean,
+        # which the bright pixel lifts. The cell with the pixel moves most.
+        self.assertEqual(int(maps["tip"].argmax()), 0)
+        self.assertGreater(maps["tip"][0, 0], 5 * maps["tip"][1, 1])
+
+    def test_it_is_pinned(self):
+        inference = DrawingInference(jitter=1.0)
+        state, images = varied_observation()
+        one = perturb.patch_occlusion(inference, state, images, ["tip"], (2, 2))
+        two = perturb.patch_occlusion(inference, state, images, ["tip"], (2, 2))
+        np.testing.assert_array_equal(one["tip"], two["tip"])
+
+
 # -- Grad-CAM's trunk, on all three architectures ------------------------------
 
 
