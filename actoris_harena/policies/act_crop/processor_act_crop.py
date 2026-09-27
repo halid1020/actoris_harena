@@ -29,6 +29,7 @@ def make_harena_act_crop_pre_post_processors(
     crop = HarenaTactileCropProcessorStep(
         fraction=config.tactile_crop,
         cameras=tuple(config.tactile_cameras),
+        resize=bool(getattr(config, "tactile_resize", True)),
     )
     preprocessor.steps = [crop, *preprocessor.steps]
     return preprocessor, postprocessor

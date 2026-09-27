@@ -39,6 +39,14 @@ import numpy as np
 DEFAULT_SEED = 0
 
 
+#: Config fields a policy seeds its OWN generator from, ignoring the global one.
+#: FastWAM draws its noise from ``torch.Generator().manual_seed(inference_seed)``,
+#: so pinning only the global seed changes nothing: MEASURED 2026-09-26, three
+#: "seeds" gave one answer to every digit, which read as a sampler with no
+#: spread and was in fact a seed that never arrived.
+SEED_FIELDS = ("inference_seed", "predict_seed")
+
+
 @contextlib.contextmanager
 def pinned(inference: Any, seed: int = DEFAULT_SEED) -> Iterator[None]:
     """Make everything inside draw the same randoms, and leave no trace.
@@ -51,10 +59,18 @@ def pinned(inference: Any, seed: int = DEFAULT_SEED) -> Iterator[None]:
     torch = inference.torch
     cpu_state = torch.get_rng_state()
     cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    config = getattr(getattr(inference, "policy", None), "config", None)
+    saved = {
+        name: getattr(config, name) for name in SEED_FIELDS if hasattr(config, name)
+    }
     try:
         torch.manual_seed(seed)
+        for name in saved:
+            setattr(config, name, seed)
         yield
     finally:
+        for name, value in saved.items():
+            setattr(config, name, value)
         torch.set_rng_state(cpu_state)
         if cuda_states is not None:
             torch.cuda.set_rng_state_all(cuda_states)

@@ -15,8 +15,10 @@ only the one method would have failed on the first line of ``evaluate_frame``.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -43,6 +45,31 @@ def image_keys_of(batch: dict[str, Tensor]) -> "list[str]":
         for key in batch
         if key.startswith("observation.images.") and not key.endswith("_is_pad")
     )
+
+
+def decoded_as_tensor(video: Any) -> Tensor:
+    """What ``infer_joint`` decoded, as ``[C, T, H, W]`` floats in ``[0, 1]``.
+
+    The Wan core's ``_decode_latents`` returns a LIST OF PIL IMAGES, one per
+    frame, ``H x W x 3`` in ``0..255`` -- a preview format, not a tensor.
+    ``torch.as_tensor`` cannot read a PIL image at all, and a naive stack would
+    produce ``0..255`` against a dataset frame in ``0..1``, so every PSNR would
+    be scored against the wrong peak and still look like a number. MEASURED on
+    Viking, 2026-09-19: the first run that got this far died here, after the
+    model had denoised.
+
+    A tensor is passed through, so a future port that returns one is not
+    rescaled twice.
+    """
+    if isinstance(video, Tensor):
+        return video
+    frames = [
+        torch.from_numpy(np.asarray(frame, dtype=np.uint8).copy()) for frame in video
+    ]
+    if not frames:
+        raise ValueError("infer_joint decoded no frames")
+    # [T, H, W, C] uint8 -> [C, T, H, W] float in [0, 1].
+    return torch.stack(frames).permute(3, 0, 1, 2).float() / 255.0
 
 
 class HarenaFastwamPredictPolicy(HarenaFastwamPolicy):
@@ -106,6 +133,15 @@ class HarenaFastwamPredictPolicy(HarenaFastwamPolicy):
         """
         self.eval()
         infer_kwargs = _batch_to_infer_kwargs(batch=batch, config=self.config)
+        # The scorer loads a WINDOW of states, because `observation_delta_indices`
+        # names the future frames the model is supervised on -- [0, 4, ... 32].
+        # `infer_joint` conditions on a single state, so the window is reduced
+        # to its FIRST entry: index 0 is the current observation, and the last
+        # entry is thirty-two steps into the future. Taking the last would
+        # condition the prediction on what it is supposed to predict.
+        proprio = infer_kwargs.get("proprio")
+        if proprio is not None and proprio.ndim == 3:
+            infer_kwargs["proprio"] = proprio[:, 0]
         infer_kwargs.update(
             num_video_frames=self.config.model_video_frames,
             action_horizon=self.config.action_horizon,
@@ -116,10 +152,24 @@ class HarenaFastwamPredictPolicy(HarenaFastwamPolicy):
             # video measurement that never looks at the action.
             test_action_with_infer_action=False,
         )
+        # The shared builder assembles arguments for `infer_action`, and
+        # `infer_joint` takes a SUBSET of them -- `compile_action_infer` belongs
+        # to the action path alone and reaches here as an unexpected keyword.
+        # Filtering against the signature keeps this working as the port tracks
+        # upstream, where the two argument lists have drifted before.
+        accepted = set(inspect.signature(self.model.infer_joint).parameters)
+        unknown = sorted(set(kwargs) - accepted)
+        if unknown:
+            # A caller's own keyword is never dropped silently: that would turn
+            # a misspelling into a setting that appears to apply and does not.
+            raise TypeError(
+                f"infer_joint does not take {', '.join(unknown)}; it takes "
+                f"{', '.join(sorted(accepted))}"
+            )
         infer_kwargs.update(kwargs)
+        infer_kwargs = {k: v for k, v in infer_kwargs.items() if k in accepted}
         out = self.model.infer_joint(**infer_kwargs)
-        video = out["video"] if isinstance(out, dict) else out[0]
-        video = torch.as_tensor(video)
+        video = decoded_as_tensor(out["video"] if isinstance(out, dict) else out[0])
         if video.ndim == 4:
             video = video.unsqueeze(0)
         if video.ndim != 5:

@@ -33,6 +33,17 @@ this a one-file change instead of a survey:
   change how much padding each slot gets -- a second, uncontrolled difference
   between the cropped run and its baseline.
 
+AND THE ARM THAT SEPARATES THEM. Because the crop removes the rim and stretches
+what is left in one operation, every result about cropping is a result about
+both. `resize=False` does the first alone, at the cost of the three conveniences
+above. MEASURED on a CPU before any of it reached a queue: the action-chunking
+family builds and runs with the fingertip cameras shorter than the overhead one;
+the diffusion family REFUSES, because LeRobot validates that every camera has
+the same shape and raises before a model is built. So the arm exists for one
+family and not the other, and that is a property of the architectures rather
+than of this rig. pi0.5 would letterbox the shorter image differently, which is
+a second uncontrolled difference, so it is left on the default too.
+
 WHERE IT RUNS. As a processor step at index 0 of the preprocessor, ahead of
 `RenameObservationsProcessorStep`. That ordering is load-bearing on pi0.5,
 whose rename map turns `observation.images.left_arm_left_gripper` into
@@ -54,7 +65,7 @@ threshold to justify. That is a separate piece of work, not a flag on this one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import torch
@@ -142,6 +153,22 @@ def crop_and_restore(image: torch.Tensor, fraction) -> torch.Tensor:
     return resized.reshape(*lead, *resized.shape[-3:]).to(image.dtype)
 
 
+def crop_only(image: torch.Tensor, fraction) -> torch.Tensor:
+    """Centre-crop and leave it cropped, so the shape DOES change.
+
+    The arm that separates the two things the default crop does at once. Every
+    result about cropping in this work is a result about rim removal AND the
+    anisotropic stretch that resizing back applies; this removes the rim and
+    nothing else, at the cost of the three conveniences the module docstring
+    lists. Accepts any leading batch dimensions; the last three are ``(C, H, W)``.
+    """
+    if min(as_fractions(fraction)) >= 1.0:
+        return image
+    height, width = image.shape[-2], image.shape[-1]
+    top, left, keep_h, keep_w = crop_box(height, width, fraction)
+    return image[..., top : top + keep_h, left : left + keep_w]
+
+
 @ProcessorStepRegistry.register(name="so101_tactile_crop")
 @dataclass
 class HarenaTactileCropProcessorStep(ObservationProcessorStep):
@@ -157,6 +184,12 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
 
     fraction: "float | tuple[float, float]" = DEFAULT_CROP
     cameras: "tuple[str, ...]" = field(default_factory=lambda: TACTILE_CAMERAS)
+    #: Resize back to the source size after cropping. True is the default and
+    #: what every result so far was measured with. False leaves the image
+    #: cropped, which separates rim removal from the stretch -- and gives up
+    #: the three conveniences the module docstring lists, so it is an
+    #: experiment and not a better setting.
+    resize: bool = True
 
     def __post_init__(self):
         crop_box(64, 64, self.fraction)  # refuse a bad fraction at construction
@@ -176,16 +209,35 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
             if not isinstance(value, torch.Tensor):
                 continue
             if key.startswith(f"{OBS_IMAGES}.") and self._is_tactile(key):
-                out[key] = crop_and_restore(value, self.fraction)
+                out[key] = (
+                    crop_and_restore(value, self.fraction)
+                    if self.resize
+                    else crop_only(value, self.fraction)
+                )
         return out
 
     def get_config(self) -> "dict[str, Any]":
         return {
             "fraction": list(as_fractions(self.fraction)),
             "cameras": list(self.cameras),
+            "resize": bool(self.resize),
         }
 
     def transform_features(self, features):
-        # The shape is deliberately unchanged -- see the module docstring -- so
-        # there is nothing to declare here.
+        # With `resize` on, the shape is deliberately unchanged -- see the
+        # module docstring -- and there is nothing to declare. With it off the
+        # tactile cameras really are smaller, and a policy built from features
+        # that still claimed the source size would construct its encoder around
+        # an image it never receives.
+        if self.resize or min(as_fractions(self.fraction)) >= 1.0:
+            return features
+        for key, feature in features.items():
+            if not (key.startswith(f"{OBS_IMAGES}.") and self._is_tactile(key)):
+                continue
+            shape = tuple(feature.shape)
+            if len(shape) != 3:
+                continue
+            channels, height, width = shape
+            _, _, keep_h, keep_w = crop_box(height, width, self.fraction)
+            features[key] = replace(feature, shape=(channels, keep_h, keep_w))
         return features
