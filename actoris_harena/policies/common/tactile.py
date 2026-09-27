@@ -169,6 +169,32 @@ def crop_only(image: torch.Tensor, fraction) -> torch.Tensor:
     return image[..., top : top + keep_h, left : left + keep_w]
 
 
+def crop_tiles_and_restore(
+    image: torch.Tensor, fraction, rows: int, cols: int
+) -> torch.Tensor:
+    """Crop every tile of a composite on its own, then re-tile.
+
+    FastWAM reads the four fingertips as ONE 2x2 composite (``tactile_quad``,
+    built at staging by ``recording.dataset_view``). A centred crop of the whole
+    composite would trim the outer edge of each tile and leave the four inner
+    edges -- where the tiles meet, and where each sensor's rim is just as bright
+    -- untouched. So each tile is cropped about its own centre and resized back
+    into its own quadrant. The tile grid is ``height // rows`` by
+    ``width // cols``, the same arithmetic the composite was written with.
+    """
+    if min(as_fractions(fraction)) >= 1.0:
+        return image
+    height, width = image.shape[-2], image.shape[-1]
+    tile_h, tile_w = height // rows, width // cols
+    out = image.clone()
+    for row in range(rows):
+        for col in range(cols):
+            rs = slice(row * tile_h, (row + 1) * tile_h)
+            cs = slice(col * tile_w, (col + 1) * tile_w)
+            out[..., rs, cs] = crop_and_restore(image[..., rs, cs], fraction)
+    return out
+
+
 @ProcessorStepRegistry.register(name="so101_tactile_crop")
 @dataclass
 class HarenaTactileCropProcessorStep(ObservationProcessorStep):
@@ -190,11 +216,20 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
     #: the three conveniences the module docstring lists, so it is an
     #: experiment and not a better setting.
     resize: bool = True
+    #: Composite cameras and their tile grid, ``{"tactile_quad": (2, 2)}``: each
+    #: tile is cropped about its own centre (see `crop_tiles_and_restore`).
+    #: Empty for every policy that reads the fingertips as separate cameras.
+    tiled: "dict[str, tuple[int, int]]" = field(default_factory=dict)
 
     def __post_init__(self):
         crop_box(64, 64, self.fraction)  # refuse a bad fraction at construction
         self.fraction = as_fractions(self.fraction)
         self.cameras = tuple(self.cameras)
+        self.tiled = {name: (int(r), int(c)) for name, (r, c) in self.tiled.items()}
+        if self.tiled and not self.resize:
+            # A tile cannot shrink inside a composite without moving its
+            # neighbours; refusing here beats a shape error in the model.
+            raise ValueError("a tiled composite can only be cropped with resize=True")
 
     def _is_tactile(self, key: str) -> bool:
         # Matched on the SHORT name so the same step works whether the key is
@@ -208,7 +243,12 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
         for key, value in observation.items():
             if not isinstance(value, torch.Tensor):
                 continue
-            if key.startswith(f"{OBS_IMAGES}.") and self._is_tactile(key):
+            if not key.startswith(f"{OBS_IMAGES}."):
+                continue
+            grid = self.tiled.get(key.rsplit(".", 1)[-1])
+            if grid is not None:
+                out[key] = crop_tiles_and_restore(value, self.fraction, *grid)
+            elif self._is_tactile(key):
                 out[key] = (
                     crop_and_restore(value, self.fraction)
                     if self.resize
@@ -221,6 +261,7 @@ class HarenaTactileCropProcessorStep(ObservationProcessorStep):
             "fraction": list(as_fractions(self.fraction)),
             "cameras": list(self.cameras),
             "resize": bool(self.resize),
+            "tiled": {name: list(grid) for name, grid in self.tiled.items()},
         }
 
     def transform_features(self, features):

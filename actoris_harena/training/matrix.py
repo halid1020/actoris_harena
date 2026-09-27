@@ -148,6 +148,8 @@ for _crop, _twin in (
     ("harena_act_crop", "harena_act"),
     ("harena_diffusion_crop", "harena_diffusion"),
     ("harena_pi05_crop", "harena_pi05"),
+    ("harena_dreamzero_crop", "harena_dreamzero"),
+    ("harena_fastwam_crop", "harena_fastwam"),
 ):
     POLICIES[_crop] = {
         **POLICIES[_twin],

@@ -596,6 +596,18 @@ class HarenaDreamzeroPolicy(PreTrainedPolicy):
         return self.vae.decode(video)
 
     @torch.no_grad()
+    def reconstruct_frames(self, frames: Tensor) -> Tensor:
+        """``(B, T, C, H, W)`` frames in [0, 1] through the VAE and back.
+
+        The ceiling on :meth:`predict_future_frames`: a prediction is decoded by
+        this same VAE, so no predicted frame can be sharper than an observed one
+        round-tripped. Scoring it separately says how much of a prediction's
+        error is the autoencoder's rather than the dynamics'.
+        """
+        latents = self.vae.encode(frames.to(self.parameters_device))
+        return self.vae.decode(latents)
+
+    @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
         self.eval()
         if not self._queue:

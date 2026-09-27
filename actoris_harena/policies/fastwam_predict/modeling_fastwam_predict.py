@@ -116,6 +116,27 @@ class HarenaFastwamPredictPolicy(HarenaFastwamPolicy):
         }
 
     @torch.no_grad()
+    def reconstruct_frames(self, frames: Tensor) -> Tensor:
+        """``[B, T, C, H, W]`` frames in [0, 1] through the Wan VAE and back.
+
+        The ceiling on :meth:`predict_future_frames`, which decodes through the
+        same VAE. Wan's VAE is TEMPORAL -- it compresses four frames into one
+        latent after the first -- so a clip's length must be 1 + 4k; a single
+        observed frame, which is FastWAM's whole context, always is. One clip at
+        a time, because ``_decode_latents`` returns the first clip's frames only.
+        """
+        steps = frames.shape[1]
+        if (steps - 1) % 4:
+            raise ValueError(f"the Wan VAE takes 1 + 4k frames, got {steps}")
+        clips = []
+        for clip in frames:
+            video = clip.permute(1, 0, 2, 3).unsqueeze(0)  # [1, C, T, H, W]
+            latents = self.model._encode_video_latents(video.to(self.model.device))
+            decoded = decoded_as_tensor(self.model._decode_latents(latents))
+            clips.append(decoded.permute(1, 0, 2, 3))  # [T, C, H, W]
+        return torch.stack(clips).to(device=frames.device, dtype=torch.float32)
+
+    @torch.no_grad()
     def predict_future_frames(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
         """The video FastWAM thinks comes next, ``[B, T, C, H, W]``.
 

@@ -24,6 +24,7 @@ from actoris_harena.policies.common.tactile import (
     crop_and_restore,
     crop_box,
     crop_only,
+    crop_tiles_and_restore,
 )
 
 
@@ -162,6 +163,65 @@ class ProcessorStepTest(unittest.TestCase):
             HarenaTactileCropProcessorStep(fraction=0.0)
 
 
+def quad(height=48, width=64, border=3):
+    """A 2x2 composite of four leaky tiles, each tile's interior a distinct value."""
+    tile_h, tile_w = height // 2, width // 2
+    img = torch.zeros(1, 3, height, width)
+    for i in range(4):
+        row, col = divmod(i, 2)
+        tile = leaky_frame(tile_h, tile_w, border=border, value=9.0)
+        tile[..., border:-border, border:-border] = float(i + 1)
+        img[
+            ..., row * tile_h : (row + 1) * tile_h, col * tile_w : (col + 1) * tile_w
+        ] = tile
+    return img
+
+
+class TiledCompositeTest(unittest.TestCase):
+    """FastWAM reads the four fingertips as one 2x2 composite."""
+
+    def test_each_tile_keeps_its_own_content_in_its_own_quadrant(self):
+        out = crop_tiles_and_restore(quad(), (0.6, 0.6), 2, 2)
+        self.assertEqual(out.shape, quad().shape)
+        for i in range(4):
+            row, col = divmod(i, 2)
+            tile = out[..., row * 24 : (row + 1) * 24, col * 32 : (col + 1) * 32]
+            self.assertTrue(torch.allclose(tile, torch.full_like(tile, i + 1.0)), i)
+
+    def test_the_inner_edges_go_too(self):
+        # A crop of the whole composite would keep the rims where tiles meet.
+        whole = crop_and_restore(quad(), (0.6, 0.6))
+        tiled = crop_tiles_and_restore(quad(), (0.6, 0.6), 2, 2)
+        self.assertAlmostEqual(float(tiled.max()), 4.0, places=4)
+        self.assertAlmostEqual(float(whole.max()), 9.0, places=4)
+
+    def test_the_step_crops_a_named_composite_per_tile(self):
+        step = HarenaTactileCropProcessorStep(
+            fraction=(0.6, 0.6), tiled={"tactile_quad": (2, 2)}
+        )
+        key = "observation.images.tactile_quad"
+        out = step.observation({key: quad(), "observation.images.central": quad()})
+        self.assertEqual(float(out[key].max()), 4.0)
+        self.assertTrue(torch.equal(out["observation.images.central"], quad()))
+        self.assertEqual(step.get_config()["tiled"], {"tactile_quad": [2, 2]})
+
+    def test_a_tiled_crop_without_resize_is_refused(self):
+        with self.assertRaises(ValueError):
+            HarenaTactileCropProcessorStep(tiled={"tactile_quad": (2, 2)}, resize=False)
+
+    def test_the_fastwam_crop_names_its_composite_by_default(self):
+        from actoris_harena.policies.fastwam_crop.configuration_fastwam_crop import (
+            HarenaFastwamCropConfig,
+        )
+
+        self.assertEqual(
+            HarenaFastwamCropConfig.__dataclass_fields__[
+                "tactile_tiled"
+            ].default_factory(),
+            {"tactile_quad": (2, 2)},
+        )
+
+
 class RegistrationTest(unittest.TestCase):
     """LeRobot resolves these by string surgery on the config class name."""
 
@@ -178,6 +238,18 @@ class RegistrationTest(unittest.TestCase):
             "HarenaPi05CropConfig",
             "HarenaPi05CropPolicy",
             "pi05_crop",
+        ),
+        (
+            "harena_dreamzero_crop",
+            "HarenaDreamzeroCropConfig",
+            "HarenaDreamzeroCropPolicy",
+            "dreamzero_crop",
+        ),
+        (
+            "harena_fastwam_crop",
+            "HarenaFastwamCropConfig",
+            "HarenaFastwamCropPolicy",
+            "fastwam_crop",
         ),
     )
 
@@ -244,6 +316,8 @@ class RegistrationTest(unittest.TestCase):
             ("harena_act_crop", "harena_act"),
             ("harena_diffusion_crop", "harena_diffusion"),
             ("harena_pi05_crop", "harena_pi05"),
+            ("harena_dreamzero_crop", "harena_dreamzero"),
+            ("harena_fastwam_crop", "harena_fastwam"),
         ):
             with self.subTest(crop):
                 for key in ("steps", "batch", "hours", "max_cameras"):
