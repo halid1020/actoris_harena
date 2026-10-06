@@ -39,7 +39,10 @@ button.danger { color:#dc2626; border-color:#dc262688; }
 video { width:100%; max-height:calc(100vh - 130px); background:#000; border-radius:8px; }
 .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
          gap:8px; }
-.tile { margin:0; } .tile video { max-height:38vh; }
+.tile { margin:0; min-width:0; } .tile video { max-height:38vh; }
+/* A depth frame is an image, not a video: the same box, so the pair line up. */
+.tile img { display:block; width:100%; max-height:38vh; object-fit:contain;
+            background:#000; border-radius:8px; }
 .tile figcaption { font-size:11px; opacity:.6; padding:2px 0; }
 .viewbar { border:0; padding:8px 0; }
 #joints, #ee { border-collapse:collapse; font-variant-numeric:tabular-nums;
