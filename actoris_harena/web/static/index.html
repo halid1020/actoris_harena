@@ -339,16 +339,16 @@
   <dialog id="dlg-new">
     <h3>New dataset</h3>
     <p class="muted">A dataset comes into being when the first episode is
-    recorded into it, so this checks the name and hands you the command that
-    starts the session. Starting it from here arrives with the Collect tab.</p>
+    recorded into it, so this checks the name and takes it, with the
+    instruction, to the Collect tab, where the session that records it is
+    started.</p>
     <label>Name <input id="new-name" autocomplete="off" spellcheck="false"></label>
     <label>Instruction <input id="new-task" autocomplete="off"
       placeholder="fold the towel"></label>
     <p class="err" id="new-err"></p>
-    <pre id="new-cmd" hidden></pre>
     <menu class="bar">
       <button data-close="dlg-new">Close</button>
-      <button id="new-go">Show the command</button>
+      <button id="new-go">Continue in Collect</button>
     </menu>
   </dialog>
 
