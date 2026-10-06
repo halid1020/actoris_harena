@@ -65,6 +65,9 @@ class AgentPool:
         found = self._agents.get(name)
         return None if found is None else found[1]
 
+    def names(self) -> "list[str]":
+        return list(self._agents)
+
     def running(self, name: str) -> bool:
         found = self._agents.get(name)
         return found is not None and found[0].poll() is None
@@ -124,6 +127,41 @@ async def _wait_until_answering(session, port: int) -> None:
         f"the agent did not answer within {_START_TIMEOUT_S:.0f}s"
         + (f" ({type(last).__name__})" if last else "")
     )
+
+
+#: How long the agent gets to close one device when asked to, before it is
+#: stopped anyway.
+_RELEASE_TIMEOUT_S = 8.0
+
+#: What an agent is asked to close before it is stopped. Every rig's routes,
+#: since agents differ (/arm on the UR3e, /arms on the dual SO-101); a route an
+#: agent does not have answers 404, which is fine.
+_RELEASE_PATHS = ("/cameras/stop", "/arm/stop", "/arms/stop")
+
+
+async def stop_agent(app: web.Application, name: str) -> None:
+    """Ask the agent to close its devices, THEN stop the process.
+
+    Terminating alone was not a release. With a preview stream open the agent
+    did not exit within the pool's 10 s grace -- its web server waits on the
+    stream -- so it was killed, and a RealSense whose holder is killed rather
+    than closed comes up for the next process, delivers, and stalls: the
+    collection session that had just been started recorded with no camera.
+    """
+    pool = app["agents"]
+    port = pool.port(name)
+    http = app.get("http")
+    if port is not None and pool.running(name) and http is not None:
+        for path in _RELEASE_PATHS:
+            try:
+                async with http.post(
+                    f"http://127.0.0.1:{port}{path}",
+                    timeout=aiohttp.ClientTimeout(total=_RELEASE_TIMEOUT_S),
+                ) as response:
+                    await response.read()
+            except Exception:  # noqa: BLE001 - stopping it is the fallback
+                pass
+    await asyncio.get_running_loop().run_in_executor(None, pool.stop, name)
 
 
 async def agent_port(app: web.Application, rig) -> int:
@@ -196,7 +234,7 @@ def add_agent_routes(app: web.Application) -> None:
     async def handle_agent_stop(request: web.Request) -> web.Response:
         """Stop the agent, releasing the rig's cameras and buses."""
         rig = _selected(request)
-        request.app["agents"].stop(rig.name)
+        await stop_agent(request.app, rig.name)
         return web.json_response({"running": False})
 
     async def handle_cameras(request: web.Request) -> web.Response:
@@ -235,6 +273,8 @@ def add_agent_routes(app: web.Application) -> None:
                     await response.write(chunk)
             except (ConnectionResetError, asyncio.CancelledError):
                 pass  # the tab closed
+            except aiohttp.ClientPayloadError:
+                pass  # the agent closed the camera or was stopped mid-stream
         return response
 
     async def handle_arm(request: web.Request) -> web.Response:
@@ -248,6 +288,8 @@ def add_agent_routes(app: web.Application) -> None:
 
     async def close_agents(a: web.Application) -> None:
         """Stop every agent on the way out, releasing every device."""
+        for name in a["agents"].names():
+            await stop_agent(a, name)
         a["agents"].stop_all()
 
     app.router.add_get("/api/agent/status", handle_agent_status)

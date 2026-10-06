@@ -28,6 +28,7 @@ from aiohttp import web  # type: ignore[import]
 
 from actoris_harena.recording.monitor_wire import allowed_keys_for
 from actoris_harena.rigs import Rig
+from actoris_harena.web.agent_api import stop_agent
 from actoris_harena.web.session import SessionSupervisor, resolve_plan
 from actoris_harena.web.util import in_executor
 
@@ -291,7 +292,7 @@ async def handle_session_start(request: web.Request) -> web.Response:
     # preview, and two processes cannot open one camera. The second open
     # succeeds and then delivers nothing, which is the failure that wastes an
     # operator's afternoon.
-    app["agents"].stop(app["rig"])
+    await stop_agent(app, app["rig"])
     try:
         state = await in_executor(app, session.start, name, task, plan, body)
     except RuntimeError as exc:

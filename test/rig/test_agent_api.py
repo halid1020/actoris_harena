@@ -14,11 +14,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import aiohttp
 import yaml
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from actoris_harena.rigs import RIG_FILE, load_rig
-from actoris_harena.web.agent_api import AgentPool, agent_port
+from actoris_harena.web.agent_api import AgentPool, agent_port, stop_agent
 from actoris_harena.web.console import build_app
 
 
@@ -193,6 +195,43 @@ class TestAskingTwiceAtOnce(unittest.TestCase):
         self.assertEqual(self.waits, 1)
         self.assertEqual([ready for _, ready in seen], [True, True])
         self.assertEqual(len({port for port, _ in seen}), 1)
+
+
+class TestStoppingAnAgentReleasesItsDevicesFirst(unittest.TestCase):
+    def test_the_agent_is_asked_to_close_its_devices_before_it_is_stopped(self):
+        # Terminated with a preview stream open, an agent outlived the pool's
+        # grace and was killed, and a RealSense whose holder is killed stalls
+        # for the next process: the session that had just started.
+        order = []
+
+        async def go():
+            fake = web.Application()
+
+            async def closed(request):
+                order.append(request.path)
+                return web.json_response({})
+
+            fake.router.add_post("/cameras/stop", closed)
+            fake.router.add_post("/arm/stop", closed)
+            server = TestServer(fake)
+            await server.start_server()
+            app = {"agents": AgentPool(), "http": aiohttp.ClientSession()}
+            process = FakeProcess()
+            original = process.terminate
+            process.terminate = lambda: (order.append("terminate"), original())
+            app["agents"]._agents["one"] = (process, server.port)
+            try:
+                await stop_agent(app, "one")
+            finally:
+                await app["http"].close()
+                await server.close()
+
+        _run(go())
+        self.assertEqual(order, ["/cameras/stop", "/arm/stop", "terminate"])
+
+    def test_an_agent_that_is_not_running_is_simply_forgotten(self):
+        app = {"agents": AgentPool(), "http": None}
+        _run(stop_agent(app, "never started"))
 
 
 class TestSwitchingRigs(unittest.TestCase):

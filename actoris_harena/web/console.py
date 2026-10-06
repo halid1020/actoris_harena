@@ -37,7 +37,7 @@ from aiohttp import web  # type: ignore[import]
 
 from actoris_harena.outputs import output_root
 from actoris_harena.rigs import Rig, RigError, load_rig, register_rig
-from actoris_harena.web.agent_api import add_agent_routes
+from actoris_harena.web.agent_api import add_agent_routes, stop_agent
 from actoris_harena.web.jobs import add_job_routes
 from actoris_harena.web.lifecycle_api import add_lifecycle_routes
 from actoris_harena.web.projects_api import add_project_routes
@@ -155,7 +155,7 @@ def build_app(
         # silently -- the second open succeeds and then delivers nothing.
         previous = request.app["rig"]
         if previous is not None and previous != name:
-            request.app["agents"].stop(previous)
+            await stop_agent(request.app, previous)
         request.app["rig"] = name
         return web.json_response({"rig": name})
 
