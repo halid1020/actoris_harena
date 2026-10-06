@@ -18,8 +18,28 @@ function collectVisible() {
   return !document.querySelector('#pane-collect').hidden;
 }
 
+const INPUT_LABELS = {quest: 'Quest headset', leader: 'leader arms'};
+
+// What this rig's teleop accepts, from its rig.yaml: the page offers nothing
+// else, because a flag the rig does not know ends its session at argparse.
+function applySessionSpec(spec) {
+  spec = spec || {inputs: ['quest', 'leader'], execute_flag: null, sensor_view: true};
+  const input = $('#c-input');
+  const was = input.value;
+  input.innerHTML = spec.inputs.map(i =>
+    `<option value="${i}">${INPUT_LABELS[i] || i}</option>`).join('');
+  if (spec.inputs.includes(was)) input.value = was;
+  $('#c-view-row').hidden = !spec.sensor_view;
+  if (!spec.sensor_view) $('#c-view').checked = false;
+  // Unticked every time the form is built: driving the real arm is a choice
+  // made for one session, never remembered and never carried across rigs.
+  $('#c-execute').checked = false;
+  $('#c-execute-row').hidden = !spec.execute_flag;
+}
+
 async function loadCollectConfig() {
   const cfg = await j('/api/collect/config');
+  applySessionSpec(cfg.session);
   rigSchema = cfg.schema || null;
   controlsByMode = cfg.controls || {};
   renderControls(controlsByMode[$('#c-input').value]);
@@ -54,6 +74,10 @@ function sessionRequest() {
     ee: $('#c-ee').checked,
     input: $('#c-input').value,
     sensor_view: $('#c-view').checked,
+    mock: $('#c-mock').checked,
+    // Sent only from a visible, ticked box; the server adds the rig's flag
+    // only for a literal true, and only if the rig declared one.
+    execute: !$('#c-execute-row').hidden && $('#c-execute').checked,
   };
 }
 
@@ -64,7 +88,12 @@ function describePlan(plan) {
     `depth ${plan.depth ? 'on' : 'off'}`,
     `ee ${plan.ee ? 'on' : 'off'}`,
     `fps ${plan.fps || 'default'}`,
-  ];
+    // A rig that rehearses unless told otherwise says so here, so a dry run
+    // is never mistaken for a recording of the arm moving.
+    plan.execute ? 'REAL ARM'
+      : $('#c-mock').checked ? 'mock rehearsal'
+      : !$('#c-execute-row').hidden ? 'dry run — the arm is sent nothing' : '',
+  ].filter(Boolean);
   return bits.join(' · ') + (plan.warnings.length ? '\n' + plan.warnings.join('\n') : '');
 }
 
@@ -407,7 +436,8 @@ async function pollSession() {
     $('#c-running').textContent =
       `${s.resuming ? 'resuming' : 'recording into'} '${s.name}' — ${s.task}\n`
       + `cameras ${(s.cameras || []).join('+')} · depth ${s.depth ? 'on' : 'off'}`
-      + ` · ee ${s.ee ? 'on' : 'off'}`;
+      + ` · ee ${s.ee ? 'on' : 'off'}`
+      + (s.execute ? ' · REAL ARM' : (s.mock ? ' · mock rehearsal' : ''));
     const m = s.monitor, rec = m && m.recorder;
     const armed = !!m && m.arms === 'ENABLED';
     const leading = s.input === 'leader';
@@ -486,6 +516,13 @@ window.addEventListener('load', () => {
   // straight on #collect has to be told once, here.
   if (collectVisible()) window.onPaneShown('collect');
 });
+
+// The header's picker changed rig: this form describes the old one.
+window.onRigChanged = () => {
+  $('#c-err').textContent = ''; $('#c-plan').textContent = '';
+  loadCollectConfig().catch(e => { $('#c-err').textContent = e.message; });
+  pollSession();
+};
 
 window.onPaneShown = (name) => {
   if (name === 'collect') {

@@ -53,6 +53,16 @@ def schema_json(rig: Rig) -> "dict[str, Any] | None":
     }
 
 
+def session_json(rig: Rig) -> "dict[str, Any]":
+    """What a rig's teleop accepts, for the page to build its form from."""
+    spec = rig.session
+    return {
+        "inputs": list(spec.inputs),
+        "execute_flag": spec.execute_flag,
+        "sensor_view": bool(spec.sensor_view),
+    }
+
+
 def selected_rig(app: web.Application) -> Rig:
     name = app["rig"]
     if name is None:
@@ -93,6 +103,7 @@ def supervisor(app: web.Application) -> SessionSupervisor:
         python=str(rig.python),
         teleop=Path(rig.teleop),
         monitor_port=int(app.get("monitor_port", 8766)),
+        execute_flag=rig.session.execute_flag,
     )
     app["session_key"] = (rig.name, str(root))
     return app["session"]
@@ -151,6 +162,10 @@ async def handle_collect_config(request: web.Request) -> web.Response:
             # which is the authority anyway, instead of inventing columns for a
             # robot that never declared any.
             "schema": schema_json(rig),
+            # What this rig's teleop accepts: which inputs to offer, whether
+            # the desktop window exists, and whether "drive the real arm" is a
+            # box to show at all.
+            "session": session_json(rig),
             # WHAT THIS PAGE CAN DO, which is not the whole control map. The
             # session's own allow-list is the authority and it admits two keys;
             # everything that moves the robot stays on the headset, where the
@@ -243,6 +258,8 @@ async def _plan_for(request: web.Request, body: "dict[str, Any]") -> "dict[str, 
         body,
         config,
         running(app),
+        None,
+        rig.session,
     )
 
 

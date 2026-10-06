@@ -1,0 +1,294 @@
+/* Rig console — layout and controls. The dataset pane's rules are the ones the
+   standalone dataset browser used, so its look is unchanged by the move. */
+
+/* ── App shell ─────────────────────────────────────────────────────────── */
+:root { color-scheme: light dark; --bd:#8883; --sel:#3b82f6; }
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.4 system-ui,sans-serif; display:flex;
+       flex-direction:column; height:100vh; }
+#topbar { display:flex; gap:10px; align-items:center; padding:6px 12px;
+          border-bottom:1px solid var(--bd); }
+#topbar .brand { font-weight:600; letter-spacing:.02em; }
+#rootdir { font-size:12px; opacity:.75; max-width:46ch; overflow:hidden;
+           text-overflow:ellipsis; white-space:nowrap; }
+.tab.sel { border-color:var(--sel); color:var(--sel); }
+main { flex:1; display:flex; overflow:hidden; }
+.pane { flex:1; display:flex; overflow:hidden; }
+.pane[hidden] { display:none; }
+.placeholder { padding:24px; max-width:52ch; }
+
+/* ── Dataset pane ──────────────────────────────────────────────────────── */
+h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; opacity:.6;
+     margin:0; padding:10px 12px; border-bottom:1px solid var(--bd); }
+.col { display:flex; flex-direction:column; border-right:1px solid var(--bd);
+       overflow:hidden; }
+#datasets { width:220px; } #episodes { width:260px; }
+#viewer { flex:1; padding:12px; overflow:auto; }
+ul { list-style:none; margin:0; padding:0; overflow:auto; flex:1; }
+li { padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--bd);
+     display:flex; gap:8px; align-items:center; }
+li:hover { background:#8881; }
+li.sel { background:var(--sel); color:#fff; }
+.grow { flex:1; } .muted { opacity:.6; font-size:12px; }
+.bar { padding:8px 12px; border-bottom:1px solid var(--bd); display:flex;
+       gap:8px; align-items:center; }
+button { font:inherit; padding:4px 10px; border:1px solid var(--bd);
+         border-radius:6px; background:#8881; cursor:pointer; }
+button:disabled { opacity:.4; cursor:default; }
+button.danger { color:#dc2626; border-color:#dc262688; }
+video { width:100%; max-height:calc(100vh - 130px); background:#000; border-radius:8px; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+         gap:8px; }
+.tile { margin:0; } .tile video { max-height:38vh; }
+.tile figcaption { font-size:11px; opacity:.6; padding:2px 0; }
+.viewbar { border:0; padding:8px 0; }
+#joints, #ee { border-collapse:collapse; font-variant-numeric:tabular-nums;
+               font-size:12px; }
+#joints th, #joints td, #ee th, #ee td { padding:2px 10px; text-align:right;
+                                         border-bottom:1px solid var(--bd); }
+#joints th:first-child, #ee th:first-child { text-align:left; opacity:.6;
+                                             font-weight:400; }
+.tables { display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start; }
+.rate { opacity:.75; }
+#motion summary { font-size:12px; opacity:.6; cursor:pointer; padding:8px 0; }
+.menu { border:0; padding:4px 0 10px; flex-wrap:wrap; }
+.chip { font-size:11px; padding:2px 8px; border-radius:999px; opacity:.45; }
+.chip.on { opacity:1; border-color:var(--sel); color:var(--sel); }
+.panels { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr));
+          gap:10px 18px; }
+.panel h3 { font-size:12px; font-weight:600; margin:0 0 3px;
+            font-variant-numeric:tabular-nums; }
+.panel h3 span { font-weight:400; opacity:.6; }
+.pair { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.plot { margin:0; }
+.plot canvas { width:100%; height:64px; display:block; border-radius:4px;
+               border:1px solid var(--bd); }
+.track { position:relative; }
+.head { position:absolute; top:0; bottom:0; width:1px; background:var(--sel);
+        pointer-events:none; }
+.plot figcaption { font-size:11px; opacity:.6; padding:2px 0;
+                   font-variant-numeric:tabular-nums; }
+#scrub { accent-color:var(--sel); }
+.del { margin-left:auto; opacity:.5; } .del:hover { opacity:1; }
+.pending { background:#f59e0b22; font-size:12px; }
+.damaged { background:#dc262622; font-size:12px; }
+.busy { opacity:.6; pointer-events:none; }
+.placeholder h2 { border:0; padding:10px 0 4px; }
+
+/* ── Dataset management (new / rename / merge / delete) ─────────────────── */
+#datasets { width:260px; }
+.bar.wrap { flex-wrap:wrap; }
+.dsname { display:block; }
+.dsline { display:block; }
+dialog { border:1px solid var(--bd); border-radius:10px; padding:16px 18px;
+         max-width:min(560px, 92vw); color:inherit; background:Canvas; }
+dialog::backdrop { background:#0006; }
+dialog h4.sub { margin:16px 0 4px; font-size:12px; text-transform:uppercase;
+                letter-spacing:.05em; opacity:.6; }
+#root-list { max-height:30vh; }
+#root-list li.collection { font-weight:600; }
+#root-list li.collection::after { content:" · datasets"; font-size:11px;
+                                 opacity:.6; font-weight:400; }
+dialog .bar label { display:flex; gap:6px; align-items:center; margin:0; }
+dialog .bar input[type=number] { width:6em; }
+#confirm-body { white-space:pre-line; max-width:52ch; }
+dialog h3 { margin:0 0 6px; font-size:14px; }
+dialog p { margin:0 0 10px; }
+dialog label { display:block; margin:8px 0; }
+dialog input[type=text], dialog input:not([type]) { font:inherit; width:100%;
+  padding:4px 8px; margin-top:3px; border:1px solid var(--bd); border-radius:6px;
+  background:transparent; color:inherit; }
+dialog menu { margin:14px 0 0; padding:0; border:0; justify-content:flex-end; }
+dialog pre { font-size:12px; white-space:pre-wrap; background:#8881;
+             padding:8px 10px; border-radius:6px; user-select:all; }
+.err { color:#dc2626; font-size:12px; white-space:pre-line; }
+.picklist { max-height:34vh; overflow:auto; border:1px solid var(--bd);
+            border-radius:6px; }
+.picklist li { cursor:default; }
+.picklist label { display:flex; gap:8px; align-items:center; width:100%; }
+
+/* ── Collect pane ───────────────────────────────────────────────────────── */
+#session { width:360px; overflow-y:auto; }
+#live { flex:1; padding:0 12px 12px; overflow:auto; display:flex;
+        flex-direction:column; }
+#live .bar { border:0; padding:8px 0; }
+#live-tiles img { width:100%; border-radius:8px; background:#000; display:block; }
+.pad { padding:10px 12px; }
+.pad label { display:block; margin:8px 0; }
+.pad label.row { display:flex; gap:8px; align-items:center; }
+.pad input:not([type=checkbox]), .pad select { font:inherit; padding:3px 8px;
+  border:1px solid var(--bd); border-radius:6px; background:transparent;
+  color:inherit; }
+.pad label:not(.row) input { width:100%; margin-top:3px; }
+fieldset { border:1px solid var(--bd); border-radius:8px; margin:10px 0;
+           padding:4px 10px 8px; }
+legend { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+         opacity:.6; }
+#c-plan { white-space:pre-line; }
+#session-log { font-size:11px; max-height:26vh; overflow:auto; margin:0;
+               padding:8px 12px; border-top:1px solid var(--bd); opacity:.75;
+               white-space:pre-wrap; }
+#preflight summary, #controls summary { font-size:12px; opacity:.6;
+    cursor:pointer; padding:8px 12px; border-top:1px solid var(--bd); }
+#c-controls { margin:0 12px 10px; width:calc(100% - 24px); }
+#c-controls td:first-child { width:2.4em; font-weight:600;
+                             font-variant-numeric:tabular-nums; }
+#c-controls td:last-child { width:11em; white-space:nowrap; }
+/* The live joint table: the same shape as the one the recorded episodes are
+   played with, so the two read alike. */
+#c-signals { margin-top:10px; }
+#c-signals .bar { border:0; padding:4px 0; }
+#c-joints { border-collapse:collapse; font-variant-numeric:tabular-nums;
+            font-size:12px; }
+#c-joints th, #c-joints td { padding:2px 10px; text-align:right;
+                             border-bottom:1px solid var(--bd); }
+#c-joints th:first-child { text-align:left; opacity:.6; font-weight:400; }
+table.checks { border-collapse:collapse; font-size:12px; width:100%; }
+table.checks td { padding:2px 6px; vertical-align:top;
+                  border-bottom:1px solid var(--bd); }
+tr.lvl-FAIL td:first-child { color:#dc2626; }
+tr.lvl-WARN td:first-child { color:#f59e0b; }
+tr.lvl-OK td:first-child { color:#16a34a; }
+
+/* ── Signals pane ───────────────────────────────────────────────────────── */
+#assignments { width:400px; overflow-y:auto; }
+#s-work { flex:1; overflow:auto; }
+#s-work .bar { position:sticky; top:0; background:Canvas; z-index:1; }
+h3.sub { font-size:12px; text-transform:uppercase; letter-spacing:.05em;
+         opacity:.6; margin:14px 0 4px; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 10px; }
+/* Candidates, not toggles: every device here can be pressed, and the blue is
+   reserved for the ones that already have a name. */
+.chips .chip { cursor:pointer; border:1px solid var(--bd); opacity:1; }
+.chips .chip.bound { border-color:var(--sel); color:var(--sel); font-weight:600; }
+/* The name a shown device already carries, so pressing another one moves it. */
+button.sel { border-color:var(--sel); color:var(--sel); font-weight:600; }
+#s-cam-view .tile { max-width:480px; }
+#s-cam-img { width:100%; border-radius:8px; background:#000; display:block; }
+#s-map table.checks { margin-bottom:6px; }
+#s-map td { padding:2px 6px; }
+button.link { border:0; background:none; padding:0 4px; opacity:.5;
+              text-decoration:underline; }
+button.link:hover { opacity:1; }
+.ok { color:#16a34a; } .bad { color:#dc2626; }
+
+/* ── Job dock ───────────────────────────────────────────────────────────── */
+/* Fixed to the page, not to a pane: a merge outlives the tab it was started
+   from, so it has to stay visible from every one of them. */
+#jobdock { position:fixed; right:12px; bottom:12px; width:340px;
+           max-width:calc(100vw - 24px); background:Canvas; z-index:5;
+           border:1px solid var(--bd); border-radius:10px;
+           box-shadow:0 4px 16px #0004; overflow:hidden; }
+#jobdock[hidden] { display:none; }
+#jobdock-head { display:flex; gap:8px; align-items:center; width:100%;
+                border:0; border-radius:0; background:#8881; text-align:left;
+                padding:8px 10px; font-size:12px; }
+#jobdock-list { list-style:none; margin:0; padding:0; max-height:40vh;
+                overflow:auto; }
+#jobdock-list li { display:block; padding:8px 10px; cursor:default;
+                   font-size:12px; }
+#jobdock-list li:hover { background:none; }
+.jobmsg { display:block; opacity:.6; }
+.job-running { color:var(--sel); } .job-failed { color:#dc2626; }
+
+/* Cameras that were asked for and are not delivering. Amber, not red: the rig
+   is still usable, but one of its streams is not being recorded. */
+.stream-missing {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #f59e0b22;
+  color: #f59e0b;
+  font-size: 12px;
+}
+
+/* The same fact said inline, beside a camera in the stream picker: this one is
+   not plugged in, so it is offered unticked. No box -- it sits in a label. */
+.stream-absent {
+  color: #f59e0b;
+  font-size: 12px;
+}
+
+/* ── Training progress ────────────────────────────────────────────────────── */
+/* A run card: what a machine is doing, and its curve when it is opened. */
+.runcard { border: 1px solid var(--bd); border-radius: 6px; padding: .4rem .5rem;
+           margin-bottom: .4rem; }
+.runcard .bar { gap: .4rem; }
+.runcard.open { border-color: var(--sel); }
+.runbar { height: 6px; border-radius: 3px; background: color-mix(in srgb, currentColor 12%, transparent);
+          margin: .35rem 0 .25rem; overflow: hidden; }
+.runbar > span { display: block; height: 100%; background: var(--sel); width: 0; }
+.runbar.done > span { background: #16a34a; }
+.runbar.failed > span, .runbar.stalled > span { background: #dc2626; }
+.runstate { font-size: .82em; padding: 0 .4em; border-radius: 3px;
+            border: 1px solid currentColor; }
+.runstate.running { color: #2563eb; }
+.runstate.done    { color: #16a34a; }
+.runstate.failed, .runstate.stalled { color: #dc2626; }
+.runstate.idle    { color: #6b7280; }
+.runnums { font-variant-numeric: tabular-nums; font-size: .88em; }
+.plot { margin: 0 0 .5rem; }
+.plot canvas { width: 100%; height: 180px; display: block; }
+.plot.small canvas { height: 56px; }
+.logtail { font-size: .78em; max-height: 8.5rem; overflow: auto; white-space: pre-wrap;
+           word-break: break-all; opacity: .8; margin: .3rem 0 0; }
+.swatch { display: inline-block; width: .7em; height: .7em; border-radius: 2px;
+          margin-right: .3em; vertical-align: baseline; }
+/* .pair is already the two-column grid used elsewhere; only the caption
+   needs sizing here. */
+.runcard .pair > figure { min-width: 0; }
+.runcard .pair figcaption { font-size: .78em; }
+
+/* ── Subviews ─────────────────────────────────────────────────────────────── */
+/* The Training pane does two unrelated jobs — starting a run and reading one —
+   so it is split the way the top bar splits the app, one level down. Nothing
+   else uses this yet; it is written generically so the next pane that needs it
+   does not invent a second mechanism. */
+#pane-training { flex-direction: column; }
+.subtabs { display: flex; gap: 8px; padding: 6px 12px;
+           border-bottom: 1px solid var(--bd); }
+.subtab { font-size: 12px; }
+.subtab.sel { border-color: var(--sel); color: var(--sel); }
+.subview { flex: 1; display: flex; overflow: hidden; }
+.subview[hidden] { display: none; }
+
+/* ── Training jobs ────────────────────────────────────────────────────────── */
+#training-projects { width: 220px; }
+#training-runs { min-width: 0; }
+#t-selection, #t-runs { overflow: visible; }
+#training-runs > .pad { overflow: auto; }
+.scroll { overflow-x: auto; max-width: 100%; }
+/* Wide content scrolls inside its own box; the column itself must not, or the
+   whole page slides sideways and the toolbar leaves the screen. */
+#t-table-wrap { overflow: auto; max-height: 44vh; flex: 0 0 auto;
+                border-bottom: 1px solid var(--bd); }
+
+table.runs { border-collapse: collapse; font-size: 12px; width: 100%; }
+table.runs th, table.runs td { padding: 3px 8px; text-align: left;
+                               white-space: nowrap; border-bottom: 1px solid var(--bd); }
+table.runs th { position: sticky; top: 0; background: Canvas; z-index: 1;
+                cursor: pointer; font-weight: 600; }
+table.runs th:not([data-sort]) { cursor: default; }
+table.runs td { font-variant-numeric: tabular-nums; }
+table.runs tr.sel > td { background: color-mix(in srgb, var(--sel) 12%, transparent); }
+table.runs .tick { width: 1.6rem; cursor: default; }
+table.runs tbody tr:hover > td { background: #8881; }
+
+#t-panels .panels { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+#t-panels figure.plot canvas { height: 150px; }
+#t-panels .readout { min-height: 1.1em; }
+#t-smooth { width: 6rem; vertical-align: middle; }
+#t-project-list li.sel .muted { color: #fff; opacity: .8; }
+
+/* The share of horizon steps on which a world model beat holding the last
+   frame. A bar and not a colour: the verdict is a proportion, it sits beside
+   the numbers it summarises, and the figure has to survive a print-out and a
+   forced-colours theme, where a red/green cell would say nothing. */
+.predbar { display:inline-block; width:56px; height:6px; border-radius:3px;
+  background:#8883; vertical-align:middle; margin-left:6px; overflow:hidden; }
+.predbar > span { display:block; height:100%; background:var(--sel, #2a78d6); }
+
+/* The one box that lets a console session move a robot: never subtle. */
+#rigpick { max-width:24em; }
+.danger-row { color:#dc2626; border:1px solid #dc262688; border-radius:4px;
+  padding:4px 6px; }

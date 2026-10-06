@@ -45,6 +45,7 @@ from actoris_harena.recording.collection_settings import (
     selection_to_teleop_flags,
 )
 from actoris_harena.recording.dataset_edit import writability_problem
+from actoris_harena.rigs import SessionSpec
 from actoris_harena.web.lifecycle import valid_dataset_name
 
 #: What a rig may add to a plan that this process cannot work out for itself:
@@ -99,6 +100,35 @@ def session_refusals(
     return reasons
 
 
+def option_refusals(options: "dict[str, Any]", spec: SessionSpec) -> "list[str]":
+    """Every option this rig's teleop cannot honour, refused by name. Pure.
+
+    Refused here rather than left to the rig: a flag its parser does not know
+    ends the session at argparse with exit code 2, after the page said it had
+    started, and a silently dropped one is worse.
+    """
+    reasons: list[str] = []
+    wanted_input = str(options.get("input") or "quest")
+    if wanted_input not in spec.inputs:
+        reasons.append(
+            f"this rig offers {', '.join(spec.inputs)} as its operator "
+            f"interface, not {wanted_input!r}"
+        )
+    if options.get("sensor_view") and not spec.sensor_view:
+        reasons.append("this rig has no desktop window to open")
+    if options.get("execute") is True:
+        if spec.execute_flag is None:
+            reasons.append(
+                "this rig declares no execute flag; its session drives the "
+                "robot without one, so there is nothing to tick"
+            )
+        if options.get("mock"):
+            reasons.append(
+                "a rehearsal with mocks cannot also drive the real arm — " "untick one"
+            )
+    return reasons
+
+
 def resolve_plan(
     root: Path,
     name: str,
@@ -107,10 +137,12 @@ def resolve_plan(
     config: "dict[str, Any]",
     running: bool = False,
     probe: "DeviceProbe | None" = None,
+    session: "SessionSpec | None" = None,
 ) -> "dict[str, Any]":
     """Turn a start request into the session's stream selection and flags.
 
-    Returns ``{resuming, cameras, depth, ee, fps, warnings, refusals, flags}``.
+    Returns ``{resuming, cameras, depth, ee, fps, execute, warnings, refusals,
+    flags}``.
     A resumed dataset follows its own recorded settings and reports whatever it
     ignored; a new one takes the request, defaulting to the machine's enabled
     cameras. Refusals are collected rather than raised so the form can show
@@ -124,6 +156,8 @@ def resolve_plan(
     leader = options.get("input") == "leader"
 
     refusals = session_refusals(Path(root), name, task, resuming, exists, running)
+    spec = session if session is not None else SessionSpec()
+    refusals += option_refusals(options, spec)
     known = set(config.get("cameras") or {})
     default_enabled = {
         n for n, c in (config.get("cameras") or {}).items() if c["enabled"]
@@ -177,6 +211,9 @@ def resolve_plan(
         "depth": bool(selection["depth"]),
         "ee": bool(selection["ee"]),
         "fps": selection["fps"],
+        # Only a literal True, and only for a rig that declared a flag: what
+        # the page shows as "REAL ARM" must be what teleop_argv will send.
+        "execute": options.get("execute") is True and spec.execute_flag is not None,
         "warnings": warnings,
         "refusals": refusals,
         "flags": selection_to_teleop_flags(
@@ -197,6 +234,7 @@ def teleop_argv(
     options: "dict[str, Any]",
     monitor_port: int,
     teleop: Path,
+    execute_flag: "str | None" = None,
 ) -> "list[str]":
     """The command that runs this session. Pure — unit-tested."""
     argv = [
@@ -230,6 +268,11 @@ def teleop_argv(
         argv.append("--mock")
     if options.get("no_streaming_encode"):
         argv.append("--no-streaming-encode")
+    if execute_flag is not None and options.get("execute") is True:
+        # The only way this console moves a rig whose teleop rehearses by
+        # default: the rig declared the flag AND a person asked for it in this
+        # request. `is True`, not truthiness, so a stray string cannot.
+        argv.append(execute_flag)
     return argv
 
 
@@ -243,6 +286,7 @@ class SessionSupervisor:
         teleop: Path,
         monitor_port: int = 8766,
         tail_lines: int = 400,
+        execute_flag: "str | None" = None,
     ) -> None:
         self.root = Path(root)
         self.monitor_port = int(monitor_port)
@@ -254,6 +298,7 @@ class SessionSupervisor:
         # a venv's bin/python is a symlink to the system interpreter.
         self.python = str(python)
         self.teleop = Path(teleop)
+        self.execute_flag = execute_flag
         self._proc: subprocess.Popen | None = None
         self._tail: deque = deque(maxlen=tail_lines)
         self._lock = threading.Lock()
@@ -287,7 +332,14 @@ class SessionSupervisor:
         if self.running():
             raise RuntimeError("a session is already running")
         argv = teleop_argv(
-            self.root, name, task, plan, options, self.monitor_port, self.teleop
+            self.root,
+            name,
+            task,
+            plan,
+            options,
+            self.monitor_port,
+            self.teleop,
+            self.execute_flag,
         )
         # The console has no terminal for the session to ask questions on, so
         # anything it would prompt for has to be answered here or not asked.
@@ -327,6 +379,8 @@ class SessionSupervisor:
             "depth": plan["depth"],
             "ee": plan["ee"],
             "fps": plan["fps"],
+            "execute": self.execute_flag is not None and self.execute_flag in argv,
+            "mock": "--mock" in argv,
             "started": time.time(),
         }
         threading.Thread(target=self._read_output, daemon=True).start()

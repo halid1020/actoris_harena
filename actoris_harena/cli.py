@@ -25,6 +25,7 @@ from actoris_harena.rigs import (
     discover,
     load_registry,
     load_rig,
+    register_rig,
     save_registry,
 )
 
@@ -55,14 +56,10 @@ def _cmd_rigs(args: argparse.Namespace) -> int:
     if args.action == "add":
         root = Path(args.path).expanduser()
         try:
-            rig = load_rig(root)
+            rig = register_rig(root, args.registry)
         except RigError as exc:
             print(f"❌ {exc}", file=sys.stderr)
             return 2
-        roots = load_registry(args.registry)
-        if rig.root not in [r.expanduser().absolute() for r in roots]:
-            roots.append(rig.root)
-        save_registry(roots, args.registry)
         print(f"✅ {rig.name} ({rig.title}) registered from {rig.root}")
         return 0
 
@@ -104,6 +101,7 @@ def _cmd_console(args: argparse.Namespace) -> int:
         collection_dir=args.dir,
         port=args.port,
         selected=args.rig,
+        registry=args.registry,
     )
 
 

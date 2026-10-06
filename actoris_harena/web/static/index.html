@@ -1,12 +1,13 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SO-101 rig console</title>
+<title>Rig console</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   <header id="topbar">
-    <span class="brand">SO-101 rig console</span>
+    <span class="brand">Rig console</span>
+    <select id="rigpick" title="which robot this console drives"></select>
     <button class="tab sel" data-pane="datasets">Datasets</button>
     <button class="tab" data-pane="collect">Collect</button>
     <button class="tab" data-pane="signals">Signals</button>
@@ -69,8 +70,15 @@
               <option value="leader">leader arms</option>
             </select>
           </label>
-          <label class="row"><input type="checkbox" id="c-view">
+          <label class="row" id="c-view-row"><input type="checkbox" id="c-view">
             also open the desktop window</label>
+          <label class="row"><input type="checkbox" id="c-mock">
+            rehearse with mocks — no headset, robot or camera</label>
+          <label class="row danger-row" id="c-execute-row" hidden>
+            <input type="checkbox" id="c-execute" autocomplete="off">
+            <strong>drive the real arm</strong> — it moves to home as soon as
+            the session starts. Unticked, the session rehearses and sends the
+            arm nothing.</label>
           <p class="muted" id="c-plan"></p>
           <p class="err" id="c-err"></p>
           <div class="bar">
@@ -321,6 +329,22 @@
     </menu>
   </dialog>
 
+  <dialog id="dlg-rig">
+    <h3>Register a rig</h3>
+    <p class="muted">A rig is a repository with a <code>rig.yaml</code> at its
+    top — its interpreter, its device agent and its teleoperation entry point.
+    Registering remembers it in <code>~/.config/actoris_harena/rigs.yaml</code>,
+    the same list <code>actoris-harena rigs add</code> writes. Nothing is opened
+    until the rig is selected and used.</p>
+    <label>Directory <input id="rig-root" autocomplete="off" spellcheck="false"
+      placeholder="/home/you/Projects/ur3e_raven"></label>
+    <p class="err" id="rig-err"></p>
+    <menu class="bar">
+      <button data-close="dlg-rig">Cancel</button>
+      <button id="rig-go">Register</button>
+    </menu>
+  </dialog>
+
   <dialog id="dlg-confirm">
     <h3 id="confirm-title">Are you sure?</h3>
     <p id="confirm-body"></p>
@@ -391,6 +415,7 @@
   <script src="/static/lifecycle.js"></script>
   <script src="/static/jobs.js"></script>
   <script src="/static/roots.js"></script>
+  <script src="/static/rigs.js"></script>
   <script src="/static/collect.js"></script>
   <script src="/static/signals.js"></script>
   <script src="/static/chart.js"></script>

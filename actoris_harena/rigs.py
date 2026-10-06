@@ -25,6 +25,10 @@ A rig.yaml says:
       limbs: [left, right]
       body_joints: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
       gripper: true
+    session:                          # optional; what the teleop accepts
+      inputs: [quest]                 # operator interfaces (default quest+leader)
+      execute_flag: --execute         # see SessionSpec
+      sensor_view: false              # whether --sensor-view exists (default true)
 
 Every path is relative to the rig's own directory and is resolved against it,
 never against the console's working directory -- the console may be started from
@@ -48,8 +52,18 @@ REGISTRY_PATH = Path.home() / ".config" / "actoris_harena" / "rigs.yaml"
 
 _REQUIRED = frozenset({"name", "python", "agent"})
 _OPTIONAL = frozenset(
-    {"title", "teleop", "conf", "sensor_map", "cameras", "schema", "output_dir"}
+    {
+        "title",
+        "teleop",
+        "conf",
+        "sensor_map",
+        "cameras",
+        "schema",
+        "session",
+        "output_dir",
+    }
 )
+_SESSION_KEYS = frozenset({"inputs", "execute_flag", "sensor_view"})
 
 # A rig name reaches a URL and a directory name, and is compared for equality
 # against what a browser sent. Keeping it to this alphabet means it can never
@@ -59,6 +73,49 @@ _NAME_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-
 
 class RigError(ValueError):
     """A rig.yaml, or the registry, says something unusable."""
+
+
+@dataclass(frozen=True)
+class SessionSpec:
+    """What a rig's teleop entry point accepts, so the page offers only that.
+
+    The defaults are what the console offered before rigs could say: both
+    operator interfaces, the desktop window, and no execute flag.
+
+    ``execute_flag`` is the ONE thing here with safety weight. Some rigs' teleop
+    rehearses unless told otherwise -- the UR3e sends the arm nothing without
+    ``--execute`` -- and a console that never passed it would record a dry run
+    in silence, a dataset of targets no arm was ever sent. A rig that declares
+    the flag gets it only when a person ticked the box for THAT session; a rig
+    that declares none never receives it.
+    """
+
+    inputs: "tuple[str, ...]" = ("quest", "leader")
+    execute_flag: "str | None" = None
+    sensor_view: bool = True
+
+
+def _session_spec(path: Path, spec: object) -> SessionSpec:
+    if spec is None:
+        return SessionSpec()
+    if not isinstance(spec, dict):
+        raise RigError(f"{path}: session must be a mapping")
+    unknown = set(spec) - _SESSION_KEYS
+    if unknown:
+        raise RigError(f"{path}: session has unknown key(s): {sorted(unknown)}")
+    inputs = tuple(str(i) for i in (spec.get("inputs") or SessionSpec.inputs))
+    flag = spec.get("execute_flag")
+    if flag is not None:
+        flag = str(flag)
+        # One argv element, and a flag rather than a value: it is appended to
+        # a command line verbatim, so anything else would change its meaning.
+        if not flag.startswith("--") or len(flag) < 3 or any(c.isspace() for c in flag):
+            raise RigError(f"{path}: session.execute_flag {flag!r} must be one --flag")
+    return SessionSpec(
+        inputs=inputs,
+        execute_flag=flag,
+        sensor_view=bool(spec.get("sensor_view", True)),
+    )
 
 
 @dataclass(frozen=True)
@@ -75,6 +132,7 @@ class Rig:
     sensor_map: "Path | None"
     cameras: "tuple[str, ...]"
     schema: "RobotSchema | None"
+    session: SessionSpec = SessionSpec()
 
     def agent_argv(self, *args: str) -> "list[str]":
         """The command that runs this rig's device agent, in ITS interpreter."""
@@ -185,6 +243,7 @@ def load_rig(root: "Path | str") -> Rig:
         sensor_map=resolved("sensor_map"),
         cameras=cameras,
         schema=schema,
+        session=_session_spec(path, data.get("session")),
     )
 
 
@@ -215,6 +274,35 @@ def save_registry(roots: "list[Path]", path: "Path | str | None" = None) -> None
         if text not in seen:
             seen.append(text)
     p.write_text(yaml.safe_dump({"rigs": seen}, sort_keys=False), encoding="utf-8")
+
+
+def register_rig(root: "Path | str", path: "Path | str | None" = None) -> Rig:
+    """Validate a rig directory and remember it. Returns the rig.
+
+    Shared by ``actoris-harena rigs add`` and the console's register route, so
+    a rig accepted in one is accepted in the other. Registering twice is a
+    no-op. Raises :class:`RigError` for an unusable rig.yaml, and for a rig
+    whose NAME is already registered from another directory -- the console
+    addresses a rig by name, so two would make one unreachable.
+    """
+    rig = load_rig(root)
+    roots = load_registry(path)
+    known = [r.expanduser().absolute() for r in roots]
+    if rig.root in known:
+        return rig
+    for other in roots:
+        try:
+            existing = load_rig(other)
+        except RigError:
+            continue
+        if existing.name == rig.name:
+            raise RigError(
+                f"a rig called {rig.name!r} is already registered from "
+                f"{existing.root}; remove it first or rename one"
+            )
+    roots.append(rig.root)
+    save_registry(roots, path)
+    return rig
 
 
 def discover(

@@ -125,6 +125,64 @@ class TestSelectingARig(unittest.TestCase):
         _run(go())
 
 
+class TestRegisteringARig(unittest.TestCase):
+    """From the page, through the same validation as `rigs add`."""
+
+    def setUp(self):
+        self.registry = str(Path(tempfile.mkdtemp()) / "rigs.yaml")
+
+    def app(self, rigs=()):
+        return build_app(list(rigs), registry=self.registry)
+
+    def post(self, app, root):
+        async def go():
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/console/rigs", json={"root": root})
+                listed = await (await client.get("/api/console")).json()
+                return resp.status, await resp.text(), listed
+
+        return _run(go())
+
+    def test_a_good_rig_is_registered_listed_and_not_selected(self):
+        root = _rig_dir("new", session={"execute_flag": "--execute"})
+        status, _, listed = self.post(self.app(), str(root))
+        self.assertEqual(status, 200)
+        self.assertEqual([r["name"] for r in listed["rigs"]], ["new"])
+        self.assertEqual(listed["rigs"][0]["session"]["execute_flag"], "--execute")
+        # Registering opens nothing, so it selects nothing either.
+        self.assertIsNone(listed["rig"])
+        from actoris_harena.rigs import load_registry
+
+        self.assertEqual(load_registry(self.registry), [root.resolve()])
+
+    def test_registering_twice_is_harmless(self):
+        root = str(_rig_dir("new"))
+
+        async def go():
+            async with TestClient(TestServer(self.app())) as client:
+                for _ in range(2):
+                    resp = await client.post("/api/console/rigs", json={"root": root})
+                    self.assertEqual(resp.status, 200)
+                listed = await (await client.get("/api/console")).json()
+                self.assertEqual(len(listed["rigs"]), 1)
+
+        _run(go())
+
+    def test_a_directory_with_no_rig_is_refused_with_the_reason(self):
+        status, text, _ = self.post(self.app(), tempfile.mkdtemp())
+        self.assertEqual(status, 400)
+        self.assertIn("rig.yaml", text)
+
+    def test_a_name_already_loaded_from_elsewhere_is_refused(self):
+        loaded = load_rig(_rig_dir("same"))
+        status, _, listed = self.post(self.app([loaded]), str(_rig_dir("same")))
+        self.assertEqual(status, 409)
+        self.assertEqual(listed["rigs"][0]["root"], str(loaded.root))
+        from actoris_harena.rigs import load_registry
+
+        self.assertEqual(load_registry(self.registry), [])
+
+
 class TestItOpensNoRobot(unittest.TestCase):
     def test_building_the_console_imports_no_hardware_module(self):
         before = set(sys.modules)
