@@ -40,6 +40,7 @@ from aiohttp.web_runner import GracefulExit  # type: ignore[import]
 from actoris_harena.outputs import output_root
 from actoris_harena.rigs import Rig, RigError, load_rig, register_rig
 from actoris_harena.web.agent_api import add_agent_routes, stop_agent
+from actoris_harena.web.datasets_api import add_dataset_routes
 from actoris_harena.web.jobs import add_job_routes
 from actoris_harena.web.lifecycle_api import add_lifecycle_routes
 from actoris_harena.web.projects_api import add_project_routes
@@ -212,6 +213,7 @@ def build_app(
     app.router.add_post("/api/console/rigs", handle_register_rig)
     add_root_routes(app)
     add_lifecycle_routes(app)
+    add_dataset_routes(app)
     add_project_routes(app)
     add_job_routes(app)
     add_training_routes(app)

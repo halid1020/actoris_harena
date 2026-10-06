@@ -163,7 +163,27 @@ function updateSelCount() {
 // video, instead of as slow as compositing one. The recorded mp4 is still
 // rendered on demand for a dataset this cannot cover (depth is stored as images,
 // not as a playable stream) and for downloading an episode.
+// The SO-101's joints, for a playback that does not say its own. A playback
+// from the shared console names its limbs and columns (from the dataset's
+// state names), which is what lets a seven-channel UR3e and a twelve-channel
+// dual SO-101 play back in the same page.
 const JOINTS = ['shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll','gripper'];
+
+// {limbs: [...], joints: [...], col(limb, joint) -> index | undefined}
+function layout(info) {
+  if (info.columns && info.columns.length) {
+    const limbs = info.limbs || [...new Set(info.columns.map(c => c.limb))];
+    const joints = [];
+    const at = {};
+    for (const c of info.columns) {
+      if (!joints.includes(c.joint)) joints.push(c.joint);
+      at[c.limb + '/' + c.joint] = c.index;
+    }
+    return {limbs, joints, col: (limb, joint) => at[limb + '/' + joint]};
+  }
+  return {limbs: ['left', 'right'], joints: JOINTS,
+          col: (limb, joint) => JOINTS.indexOf(joint) + (limb === 'right' ? 6 : 0)};
+}
 let sync = null;  // the running viewer, so a new selection can stop the old one
 
 function selectEpisode(idx, li) {
@@ -191,18 +211,29 @@ async function openEpisode(name, idx) {
     return;
   }
   if (name !== curDataset || idx !== curEpisode) return;  // a newer click won
-  if (info.has_depth || !info.streams.length) {
+  // A console with a composite render (the SO-101's own) falls back to it;
+  // the shared console has none, and plays depth as its own tile instead.
+  const canRender = info.mp4 !== false;
+  if (canRender && (info.has_depth || !info.streams.length)) {
     renderedFallback(name, idx, 'this dataset records a depth stream.');
+    return;
+  }
+  if (!info.streams.length) {
+    $('#viewer').innerHTML = `<p class="muted">episode ${idx} has no camera stream to play.</p>`;
     return;
   }
   const probe = document.createElement('video');
   if (!probe.canPlayType('video/mp4; codecs="av01.0.05M.08"')) {
-    renderedFallback(name, idx, 'this browser cannot decode AV1.');
+    if (canRender) renderedFallback(name, idx, 'this browser cannot decode AV1.');
+    else $('#viewer').innerHTML = '<p class="muted">this browser cannot decode '
+      + 'AV1, which the recorded videos are; try Chrome or Firefox.</p>';
     return;
   }
   const tiles = info.streams.map((s, i) =>
     `<figure class="tile"><video id="v${i}" muted preload="metadata" src="${s.url}"></video>
-     <figcaption>${s.label}</figcaption></figure>`).join('');
+     <figcaption>${s.label}</figcaption></figure>`).join('')
+    + (info.depth ? `<figure class="tile"><img id="depthtile" alt="depth"
+       src="${info.depth.url}0.png"><figcaption>${info.depth.name}</figcaption></figure>` : '');
   const motion = motionPanel(info);
   $('#viewer').innerHTML = `
     <div class="tiles">${tiles}</div>
@@ -210,8 +241,8 @@ async function openEpisode(name, idx) {
       <button id="play">▶︎ play</button>
       <input id="scrub" type="range" min="0" max="1000" value="0" class="grow">
       <span class="muted" id="clock">0.00 s</span>
-      <a id="dl" class="muted" href="/api/datasets/${name}/episodes/${idx}.mp4"
-         download>download mp4</a>
+      ${canRender ? `<a id="dl" class="muted" href="/api/datasets/${name}/episodes/${idx}.mp4"
+         download>download mp4</a>` : ''}
     </div>
     <div class="tables"><table id="joints"></table><table id="ee"></table></div>
     <details id="motion" open>
@@ -225,21 +256,25 @@ async function openEpisode(name, idx) {
   sync = startSync(info);
 }
 
-function jointRows(info, frame) {
+function playbackJointRows(info, frame) {
   const cell = (v, dp) => `<td>${v === undefined ? '--' : v.toFixed(dp)}</td>`;
   const rate = (v, dp) =>
     `<td class="rate">${v === undefined ? '--' : v.toFixed(dp)}</td>`;
   const state = info.state[frame] || [], action = info.action[frame] || [];
   const vel = (info.joint_vel || [])[frame] || [];
   const acc = (info.joint_acc || [])[frame] || [];
-  let html = '<tr><th></th><th colspan="4">left</th><th colspan="4">right</th></tr>' +
-             '<tr><th></th><th>state</th><th>cmd</th><th>vel</th><th>acc</th>' +
-             '<th>state</th><th>cmd</th><th>vel</th><th>acc</th></tr>';
-  JOINTS.forEach((jn, k) => {
+  const L = layout(info);
+  let html = '<tr><th></th>'
+    + L.limbs.map(l => `<th colspan="4">${l}</th>`).join('') + '</tr><tr><th></th>'
+    + L.limbs.map(() => '<th>state</th><th>cmd</th><th>vel</th><th>acc</th>').join('')
+    + '</tr>';
+  L.joints.forEach((jn) => {
     html += `<tr><th>${jn}</th>` +
-      [k, k + 6].map(c =>
-        cell(state[c], 1) + cell(action[c], 1) + rate(vel[c], 1) + rate(acc[c], 0)
-      ).join('') + '</tr>';
+      L.limbs.map(l => {
+        const c = L.col(l, jn);
+        if (c === undefined) return '<td></td><td></td><td></td><td></td>';
+        return cell(state[c], 1) + cell(action[c], 1) + rate(vel[c], 1) + rate(acc[c], 0);
+      }).join('') + '</tr>';
   });
   return html;
 }
@@ -294,13 +329,17 @@ function palette() {
 function motionGroups(info) {
   const accUnit = (u) => u.replace('/s', '/s²');
   const groups = [];
-  JOINTS.forEach((jn, k) => {
+  const L = layout(info);
+  L.joints.forEach((jn) => {
+    const cols = L.limbs.map(l => [l, L.col(l, jn)]).filter(([, c]) => c !== undefined);
+    if (!cols.length) return;
+    const unit = info.joint_units[cols[0][1]] || '/s';
     groups.push({
       key: jn, title: jn, signed: true,
-      vUnit: info.joint_units[k], aUnit: accUnit(info.joint_units[k]),
+      vUnit: unit, aUnit: accUnit(unit),
       vDp: 1, aDp: 0,
-      sides: [k, k + 6].map((c, s) => ({
-        side: s ? 'right' : 'left',
+      sides: cols.map(([limb, c]) => ({
+        side: limb,
         vel: info.joint_vel.map(r => r[c]), acc: info.joint_acc.map(r => r[c]),
         vPeak: info.peaks.joint_vel[c], aPeak: info.peaks.joint_acc[c],
       })),
@@ -477,6 +516,20 @@ function startSync(info) {
   const master = videos[0], base = info.streams[0].from;
   const heads = [...document.querySelectorAll('.head')];
   const frames = info.state.length;
+  // Depth is a PNG per frame, not a video, so its tile follows the playhead:
+  // one request at a time, at most ten a second, and only on a new frame.
+  const depthImg = document.querySelector('#depthtile');
+  let depthShown = 0, depthBusy = false, depthAt = 0;
+  const showDepth = (frame) => {
+    if (!depthImg || depthBusy || frame === depthShown) return;
+    if (performance.now() - depthAt < 100) return;
+    const f = Math.min(frame, info.depth.frames - 1);
+    depthBusy = true; depthAt = performance.now(); depthShown = frame;
+    const next = new Image();
+    next.onload = () => { depthImg.src = next.src; depthBusy = false; };
+    next.onerror = () => { depthBusy = false; };
+    next.src = info.depth.url + f + '.png';
+  };
   let stopped = false, playing = false;
   const at = () => Math.min(Math.max(master.currentTime - base, 0), span);
 
@@ -496,7 +549,8 @@ function startSync(info) {
     document.querySelector('#clock').textContent = t.toFixed(2) + ' s';
     document.querySelector('#scrub').value = Math.round((t / span) * 1000);
     const frame = Math.min(Math.round(t * info.fps), frames - 1);
-    document.querySelector('#joints').innerHTML = jointRows(info, frame);
+    document.querySelector('#joints').innerHTML = playbackJointRows(info, frame);
+    showDepth(frame);
     document.querySelector('#ee').innerHTML = eeRows(info, frame);
     // The plots are already drawn; only the marker moves. See motionPanel.
     const pct = frames > 1 ? (frame / (frames - 1)) * 100 : 0;
