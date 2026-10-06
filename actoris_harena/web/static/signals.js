@@ -1,250 +1,172 @@
-// The Signals tab: which device is which, and what it is called.
-// The routes and the file on disk keep the older 'sensor' name
-// (src/conf/sensor_map.yaml, and tool/test_sensor_rates.py writes the same map).
-// Everything here opens a device, so it is refused while a session runs.
+// The Signals tab: what the selected rig's devices are reporting, before any
+// session. Everything here goes through /api/agent/*, which the console proxies
+// to the rig's own agent process -- this page imports no robot and neither does
+// the console. Reading only: the agent opens no control interface.
+//
+// A collection session holds the devices, so while one runs this tab says so
+// and does nothing; two processes opening one camera is the failure that
+// wastes an afternoon (the second open succeeds and delivers nothing).
 
-let sensors = null;
-let probedPort = null;
-let previewDevice = null;
-let tickTimer = null;
+let readTimer = null;
+let readBusy = false;
+let readingArm = false;
+let camerasOpen = false;
+let cameraNames = [];
+
+const READ_PERIOD_MS = 200;
 
 function signalsVisible() {
   return !document.querySelector('#pane-signals').hidden;
 }
 
-async function loadSignals(scan) {
-  try {
-    sensors = await j('/api/sensors' + (scan ? '?scan=1' : ''));
-  } catch (e) { $('#s-err').textContent = e.message; return; }
-  probedPort = sensors.probe_port;
-  renderMap();
-  renderCandidates();
-  $('#s-note').textContent = sensors.busy
-    ? 'a session is running — assignment is disabled' : '';
-  $('#s-scan').disabled = !!sensors.busy;
+function sessionRunning() {
+  return !!(sessionState && sessionState.running);
 }
 
-function renderMap() {
-  const o = sensors.overview;
-  const mark = (x) => x.device
-    ? `<span class="${x.present ? 'ok' : 'bad'}">${x.present ? '●' : '○'}</span>`
-    : '<span class="muted">—</span>';
-  const short = (d) => d ? d.split('/').pop() : 'unassigned';
-  const rows = [];
-  rows.push('<h3 class="sub">Cameras</h3><table class="checks">');
-  for (const c of o.cameras) {
-    rows.push(`<tr><td>${mark(c)}</td><td>${c.name}</td>`
-      + `<td class="muted" title="${c.device || ''}">${short(c.device)}</td>`
-      + `<td>${c.device ? `<button class="link" data-clear="camera" data-key="${c.name}">clear</button>` : ''}</td></tr>`);
+async function post(url) {
+  return j(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                 body: '{}'});
+}
+
+function renderArm(body) {
+  const snap = body && body.snapshot;
+  // Joints are per limb, the monitor's own layout; a flat {name: deg} from a
+  // rig that reports one limb is drawn as that one limb.
+  let joints = (snap && snap.joints) || {};
+  if (Object.values(joints).some(v => typeof v === 'number')) joints = {arm: joints};
+  const sides = Object.keys(joints);
+  const names = sides.length ? Object.keys(joints[sides[0]]) : [];
+  const num = (v) => (typeof v === 'number') ? v.toFixed(2) : '--';
+  $('#s-joints').innerHTML = !sides.length ? '' :
+    '<tr><th></th>' + sides.map(s => `<th>${s} (deg)</th>`).join('') + '</tr>'
+    + names.map(n => `<tr><th>${n}</th>`
+      + sides.map(s => `<td>${num(joints[s][n])}</td>`).join('') + '</tr>').join('');
+  const readings = (snap && snap.readings) || [];
+  $('#s-readings').innerHTML = readings.map(r => {
+    const cls = r.ok === false ? 'lvl-FAIL' : (r.ok === true ? 'lvl-OK' : '');
+    return `<tr class="${cls}"><th>${r.name}</th><td>${r.value}</td>`
+      + `<td class="muted">${r.unit || ''}</td></tr>`;
+  }).join('');
+  const age = snap && snap.t_read ? Date.now() / 1000 - snap.t_read : null;
+  $('#s-arm-state').textContent = !body || !body.running ? 'not reading'
+    : !snap ? 'connected — waiting for the first reading'
+    : `reading · ${age === null ? '' : (age * 1000).toFixed(0) + ' ms old'}`;
+  $('#s-err').textContent = (body && body.problem) || '';
+}
+
+function renderCameras(names) {
+  if (names.join() === cameraNames.join()) return;
+  cameraNames = names;
+  const tiles = $('#s-tiles'); tiles.innerHTML = '';
+  for (const name of names) {
+    // One MJPEG response per camera. A multipart stream never completes, so
+    // each holds one of the browser's few connections per origin -- fine for
+    // a rig's handful of cameras, and why the src is set once, not per tick.
+    const fig = document.createElement('figure');
+    fig.className = 'tile';
+    const img = document.createElement('img');
+    img.alt = name;
+    img.src = '/api/agent/cameras/' + encodeURIComponent(name);
+    const cap = document.createElement('figcaption');
+    cap.textContent = name;
+    fig.append(img, cap);
+    tiles.appendChild(fig);
   }
-  rows.push('</table><h3 class="sub">Arms</h3><table class="checks">');
-  for (const a of o.arms) {
-    const kind = a.role === 'follower' ? 'follower' : 'leader';
-    rows.push(`<tr><td>${mark(a)}</td><td>${a.role} ${a.side}</td>`
-      + `<td class="muted" title="${a.device || ''}">${short(a.device)}</td>`
-      + `<td>${a.device ? `<button class="link" data-clear="${kind}" data-key="${a.side}">clear</button>` : ''}</td></tr>`);
+}
+
+async function readOnce() {
+  if (sessionRunning()) {
+    $('#s-note').textContent =
+      'a collection session is running and holds the devices — see the Collect tab';
+    $('#s-arm').disabled = $('#s-cams').disabled = true;
+    return;
   }
-  rows.push('</table><h3 class="sub">Depth camera</h3><table class="checks">');
-  const rs = o.realsense;
-  rows.push(`<tr><td>${mark({device: rs.serial, present: rs.present})}</td>`
-    + `<td>${rs.name || 'central'}</td><td class="muted">${rs.serial || 'unassigned'}</td>`
-    + `<td>${rs.serial ? '<button class="link" data-clear="realsense" data-key="">clear</button>' : ''}</td></tr>`);
-  rows.push('</table>');
-  $('#s-map').innerHTML = rows.join('');
-  document.querySelectorAll('#s-map [data-clear]').forEach(b => {
-    b.onclick = () => clearAssignment(b.dataset.clear, b.dataset.key);
-  });
+  $('#s-note').textContent = '';
+  $('#s-arm').disabled = $('#s-cams').disabled = false;
+  if (readingArm) renderArm(await j('/api/agent/arm'));
+  if (camerasOpen) {
+    const cams = await j('/api/agent/cameras');
+    renderCameras(cams.streams || []);
+    $('#s-cam-state').textContent = cams.problem ? cams.problem
+      : (cams.streams || []).length ? `open: ${cams.streams.join(', ')}`
+      : 'opening…';
+  }
 }
 
-// A chip carries the name its device already has, so identifying six
-// identical cameras does not start again from nothing every time. The server
-// resolves it: the map stores by-path aliases, the chips are /dev/videoN.
-function chip(device, attr) {
-  const name = (sensors.overview.bound || {})[device];
-  const shown = device.split('/').pop();
-  return `<button class="chip${name ? ' bound' : ''}" ${attr}="${device}"
-    title="${device}">${shown}${name ? ` · ${name}` : ''}</button>`;
+async function readTick() {
+  if (signalsVisible() && !readBusy) {
+    readBusy = true;
+    try { await readOnce(); }
+    catch (e) { $('#s-err').textContent = e.message; }
+    finally { readBusy = false; }
+  }
+  clearTimeout(readTimer);
+  if (signalsVisible()) readTimer = setTimeout(readTick, READ_PERIOD_MS);
 }
 
-function boundName(device) {
-  return device ? (sensors.overview.bound || {})[device] || null : null;
-}
-
-function renderCandidates() {
-  const c = sensors.candidates;
-  $('#s-cams').innerHTML = c.cameras.length
-    ? c.cameras.map(d => chip(d, 'data-cam')).join('')
-    : '<span class="muted">no capture devices found — press Scan devices</span>';
-  document.querySelectorAll('#s-cams [data-cam]').forEach(b => {
-    b.onclick = () => previewCamera(b.dataset.cam);
-  });
-
-  $('#s-ports').innerHTML = c.serial.length
-    ? c.serial.map(d => chip(d, 'data-port')).join('')
-    : '<span class="muted">no serial ports found</span>';
-  document.querySelectorAll('#s-ports [data-port]').forEach(b => {
-    b.onclick = () => probePort(b.dataset.port);
-  });
-
-  $('#s-rs').innerHTML = c.realsense.length
-    ? c.realsense.map(d =>
-        `<button class="chip${d.serial === sensors.overview.realsense.serial
-          ? ' bound' : ''}" data-rs="${d.serial}">${d.name} (${d.serial})</button>`
-      ).join('')
-    : '<span class="muted">no RealSense device found</span>';
-  document.querySelectorAll('#s-rs [data-rs]').forEach(b => {
-    b.onclick = () => assignRealsense(b.dataset.rs);
-  });
-
-  const current = boundName(previewDevice);
-  $('#s-cam-names').innerHTML = sensors.names.map(n =>
-    `<button data-name="${n}"${n === current ? ' class="sel"' : ''}>${n}</button>`
-  ).join('');
-  document.querySelectorAll('#s-cam-names [data-name]').forEach(b => {
-    b.onclick = () => assignCamera(b.dataset.name);
-  });
-  markArmButtons();
-}
-
-// The four role/side buttons under the ticks: the probed port's own binding is
-// marked, so pressing another one visibly moves the mark to it.
-function markArmButtons() {
-  const current = boundName(probedPort);
-  document.querySelectorAll('#s-ticks [data-role]').forEach(b => {
-    const mine = `${b.dataset.role} ${b.dataset.side}` === current;
-    b.classList.toggle('sel', mine);
-  });
-}
-
-// ── Cameras ─────────────────────────────────────────────────────────────────
-
-async function previewCamera(device) {
+$('#s-arm').onclick = async () => {
+  $('#s-arm').disabled = true;
   $('#s-err').textContent = '';
   try {
-    const r = await j('/api/sensors/camera/preview', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({device}),
-    });
-    previewDevice = device;
-    const name = r.streams[0];
-    $('#s-cam-view').hidden = false;
-    $('#s-cam-cap').textContent = device;
-    $('#s-cam-img').src = `/api/live/${encodeURIComponent(name)}.mjpg?t=${Date.now()}`;
-    $('#s-work-title').textContent = `showing ${device}`
-      + (boundName(device) ? ` — currently ${boundName(device)}` : ' — unassigned');
-    $('#s-release').hidden = false;
-    renderCandidates();  // the name this device already has is marked
+    if (readingArm) {
+      await post('/api/agent/arm/stop');
+      readingArm = false;
+      renderArm(null);
+    } else {
+      $('#s-arm-state').textContent = 'connecting…';
+      const r = await post('/api/agent/arm/start');
+      readingArm = !!r.started;
+      if (!r.started) $('#s-err').textContent = r.problem || 'the arm did not answer';
+    }
   } catch (e) { $('#s-err').textContent = e.message; }
-}
+  $('#s-arm').textContent = readingArm ? 'Stop reading' : 'Read the arm';
+  $('#s-arm').disabled = false;
+};
 
-async function assignCamera(name) {
-  if (!previewDevice) { $('#s-err').textContent = 'show a camera first'; return; }
+$('#s-cams').onclick = async () => {
+  $('#s-cams').disabled = true;
   try {
-    await j('/api/sensors/camera/assign', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({device: previewDevice, name}),
-    });
-  } catch (e) { $('#s-err').textContent = e.message; return; }
-  await loadSignals(false);
+    if (camerasOpen) {
+      await post('/api/agent/cameras/stop');
+      camerasOpen = false;
+      renderCameras([]);
+      $('#s-cam-state').textContent = 'cameras closed';
+    } else {
+      $('#s-cam-state').textContent = 'opening…';
+      const r = await post('/api/agent/cameras/start');
+      camerasOpen = true;
+      if (r.problem) $('#s-cam-state').textContent = r.problem;
+    }
+  } catch (e) { $('#s-cam-state').textContent = e.message; }
+  $('#s-cams').textContent = camerasOpen ? 'Close cameras' : 'Open cameras';
+  $('#s-cams').disabled = false;
+};
+
+// Leaving the tab lets go of everything it opened: a camera held here is one
+// a collection session cannot have.
+async function releaseReadings() {
+  const was = readingArm || camerasOpen;
+  readingArm = camerasOpen = false;
+  renderCameras([]);
+  $('#s-arm').textContent = 'Read the arm';
+  $('#s-cams').textContent = 'Open cameras';
+  $('#s-cam-state').textContent = 'cameras closed';
+  if (!was) return;
+  try { await post('/api/agent/arm/stop'); } catch (e) { /* agent may be gone */ }
+  try { await post('/api/agent/cameras/stop'); } catch (e) { /* likewise */ }
 }
 
-// ── Arms ────────────────────────────────────────────────────────────────────
-
-async function probePort(port) {
-  $('#s-err').textContent = '';
-  try {
-    await j('/api/sensors/arm/probe', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({port}),
-    });
-  } catch (e) { $('#s-err').textContent = e.message; return; }
-  probedPort = port;
-  $('#s-ticks').hidden = false;
-  $('#s-work-title').textContent = `reading ${port} — wiggle one arm`;
-  $('#s-release').hidden = false;
-  pollTicks();
-}
-
-async function pollTicks(rebase) {
-  if (!probedPort) return;
-  let body;
-  try { body = await j('/api/sensors/arm/ticks' + (rebase ? '?rebase=1' : '')); }
-  catch (e) { return; }
-  $('#s-ticks-table').innerHTML = body.joints.map(r =>
-    `<tr class="${r.moving ? 'lvl-OK' : ''}"><td>${r.joint}</td>`
-    + `<td>${r.value}</td><td>${r.delta >= 0 ? '+' : ''}${r.delta}</td></tr>`).join('')
-    + (body.error ? `<tr><td colspan="3" class="muted">${body.error}</td></tr>` : '');
-  clearTimeout(tickTimer);
-  if (signalsVisible()) tickTimer = setTimeout(() => pollTicks(false), 300);
-}
-
-$('#s-rebase').onclick = () => pollTicks(true);
-
-document.querySelectorAll('#s-ticks [data-role]').forEach(b => {
-  b.onclick = async () => {
-    if (!probedPort) return;
-    try {
-      await j('/api/sensors/arm/assign', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({port: probedPort, role: b.dataset.role, side: b.dataset.side}),
-      });
-    } catch (e) { $('#s-err').textContent = e.message; return; }
-    await loadSignals(false);
-  };
-});
-
-// ── Depth camera, releasing, clearing ───────────────────────────────────────
-
-async function assignRealsense(serial) {
-  try {
-    await j('/api/sensors/realsense/assign', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({serial}),
-    });
-  } catch (e) { $('#s-err').textContent = e.message; return; }
-  await loadSignals(false);
-}
-
-async function clearAssignment(kind, key) {
-  try {
-    await j('/api/sensors/clear', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({kind, key}),
-    });
-  } catch (e) { $('#s-err').textContent = e.message; return; }
-  await loadSignals(false);
-}
-
-async function releaseDevices() {
-  clearTimeout(tickTimer);
-  if (probedPort) {
-    await j('/api/sensors/arm/release',
-            {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
-      .catch(() => {});
-    probedPort = null;
-  }
-  if (previewDevice) {
-    await j('/api/preview/stop',
-            {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
-      .catch(() => {});
-    previewDevice = null;
-    $('#s-cam-img').src = '';
-  }
-  $('#s-cam-view').hidden = true;
-  $('#s-ticks').hidden = true;
-  $('#s-release').hidden = true;
-  $('#s-work-title').textContent = 'Pick a device to identify';
-  await loadSignals(false);
-}
-
-$('#s-release').onclick = releaseDevices;
-$('#s-scan').onclick = () => loadSignals(true);
-
-// Leaving the tab lets go of whatever it was holding: a camera or an arm bus
-// held open here is one a collection session cannot have.
 const _paneShown = window.onPaneShown;
 window.onPaneShown = (name) => {
   if (_paneShown) _paneShown(name);
-  if (name === 'signals') loadSignals(false);
-  else if (probedPort || previewDevice) releaseDevices();
+  if (name === 'signals') readTick();
+  else releaseReadings();
+};
+
+// A different rig has different devices: drop the old one's.
+const _rigChanged = window.onRigChanged;
+window.onRigChanged = (rig) => {
+  if (_rigChanged) _rigChanged(rig);
+  readingArm = camerasOpen = false;
+  renderCameras([]); renderArm(null);
 };

@@ -129,55 +129,35 @@
           <p class="muted">Measured joints beside the command last written to
           the motors, in URDF degrees; the gripper is its open fraction. This is
           the pair stored as the state and the action of every recorded frame.
-          With no session running, <em>Read the arms</em> opens the follower
-          buses to fill the measured half — torque off, nothing commanded — and
-          lets go of them before a session starts.</p>
+          With no session running, <em>Read the arms</em> asks the rig's agent
+          for the measured half — reading only, nothing commanded — and the
+          agent lets go of the devices before a session starts.</p>
         </div>
       </div>
     </section>
     <section class="pane" id="pane-signals" hidden>
-      <div class="col" id="assignments">
-        <h2>Assignments</h2>
+      <div class="col" id="readings">
+        <h2>Readings</h2>
+        <p class="muted">The selected rig's own devices, through its agent —
+        a process in that rig's interpreter. Reading only: nothing here moves a
+        robot. A running collection session holds the devices, so this tab
+        waits for it to end; the Collect tab shows the session's own view.</p>
+        <p class="muted" id="s-note"></p>
+        <h3 class="sub">Arm</h3>
         <div class="bar">
-          <button id="s-scan">Scan devices</button>
-          <span class="grow muted" id="s-note"></span>
+          <button id="s-arm">Read the arm</button>
+          <span class="grow muted" id="s-arm-state">not reading</span>
         </div>
-        <div class="pad" id="s-map"></div>
+        <table class="checks" id="s-joints"></table>
+        <table class="checks" id="s-readings"></table>
+        <p class="err" id="s-err"></p>
       </div>
       <div id="s-work">
         <div class="bar">
-          <span class="grow muted" id="s-work-title">Pick a device to identify</span>
-          <button id="s-release" hidden>Release</button>
+          <span class="grow muted" id="s-cam-state">cameras closed</span>
+          <button id="s-cams">Open cameras</button>
         </div>
-        <div class="pad">
-          <h3 class="sub">Cameras</h3>
-          <p class="muted">Show a candidate, press a gel or wave in front of it
-          to see which one it is, then give it a name.</p>
-          <div id="s-cams" class="chips"></div>
-          <div id="s-cam-view" hidden>
-            <figure class="tile"><img id="s-cam-img"><figcaption id="s-cam-cap"></figcaption></figure>
-            <div class="bar wrap" id="s-cam-names"></div>
-          </div>
-
-          <h3 class="sub">Arms</h3>
-          <p class="muted">Open a port, wiggle ONE arm by hand, and watch which
-          joints move. Torque stays off — nothing is commanded.</p>
-          <div id="s-ports" class="chips"></div>
-          <div id="s-ticks" hidden>
-            <table class="checks" id="s-ticks-table"></table>
-            <div class="bar wrap">
-              <button data-role="follower" data-side="right">Follower right</button>
-              <button data-role="follower" data-side="left">Follower left</button>
-              <button data-role="leader" data-side="right">Leader right</button>
-              <button data-role="leader" data-side="left">Leader left</button>
-              <button id="s-rebase">Re-zero</button>
-            </div>
-          </div>
-
-          <h3 class="sub">Depth camera</h3>
-          <div id="s-rs" class="chips"></div>
-          <p class="err" id="s-err"></p>
-        </div>
+        <div class="tiles" id="s-tiles"></div>
       </div>
     </section>
 
