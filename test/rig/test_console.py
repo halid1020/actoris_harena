@@ -183,6 +183,23 @@ class TestRegisteringARig(unittest.TestCase):
         self.assertEqual(load_registry(self.registry), [])
 
 
+class TestChoosingADriveBeforeAnySession(unittest.TestCase):
+    def test_a_fresh_console_can_change_its_directory(self):
+        # There is no supervisor until a session is planned, and the busy
+        # check used to ask a None whether it was running.
+        drive = tempfile.mkdtemp()
+
+        async def go():
+            app = build_app([load_rig(_rig_dir())])
+            app["roots_file"] = Path(tempfile.mkdtemp()) / "roots.json"
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/roots/use", json={"path": drive})
+                self.assertEqual(resp.status, 200, await resp.text())
+                self.assertEqual(str(app["root"]), drive)
+
+        _run(go())
+
+
 class TestItOpensNoRobot(unittest.TestCase):
     def test_building_the_console_imports_no_hardware_module(self):
         before = set(sys.modules)

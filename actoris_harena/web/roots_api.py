@@ -66,7 +66,10 @@ async def root_required(request: web.Request, handler):
 
 def _busy(app: web.Application) -> "str | None":
     """Why the directory cannot change right now."""
-    if app["session"].running():
+    # No supervisor until the first session is planned: the console builds it
+    # on demand, once a rig and a drive are chosen.
+    session = app["session"]
+    if session is not None and session.running():
         return "a collection session is running — stop it first"
     running = [j for j in app["jobs"].values() if j["state"] == "running"]
     if running:
@@ -79,7 +82,8 @@ def switch_root(
 ) -> None:
     """Point the console at ``path``. The caller has already validated it."""
     app["root"] = Path(path)
-    app["session"].root = Path(path)
+    if app["session"] is not None:
+        app["session"].root = Path(path)
     app["prerender_tasks"].clear()
     save_state(
         app["roots_file"], remember(load_state(app["roots_file"]), path, kind, target)
