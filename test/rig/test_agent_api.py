@@ -18,7 +18,7 @@ import yaml
 from aiohttp.test_utils import TestClient, TestServer
 
 from actoris_harena.rigs import RIG_FILE, load_rig
-from actoris_harena.web.agent_api import AgentPool
+from actoris_harena.web.agent_api import AgentPool, agent_port
 from actoris_harena.web.console import build_app
 
 
@@ -151,6 +151,48 @@ class TestTheAgentPool(unittest.TestCase):
         self.pool.start(load_rig(_rig_dir("two")))
         self.pool.stop_all()
         self.assertTrue(all(p.terminated for p in self.processes))
+
+
+class TestAskingTwiceAtOnce(unittest.TestCase):
+    """The Signals tab opens the arm and the cameras in the same breath."""
+
+    def setUp(self):
+        import actoris_harena.web.agent_api as mod
+
+        self.mod = mod
+        self.ready = False
+        self.waits = 0
+        self._real = (mod.subprocess.Popen, mod._wait_until_answering)
+
+        async def slow_wait(_session, _port):
+            self.waits += 1
+            await asyncio.sleep(0.05)
+            self.ready = True
+
+        mod.subprocess.Popen = lambda argv, **k: FakeProcess()
+        mod._wait_until_answering = slow_wait
+
+    def tearDown(self):
+        self.mod.subprocess.Popen, self.mod._wait_until_answering = self._real
+
+    def test_the_second_ask_waits_for_the_agent_the_first_one_started(self):
+        # It used to see the process running, skip the wait and be refused by
+        # a port nothing listened on yet: the arm read, the camera never opened.
+        rig = load_rig(_rig_dir("one"))
+        app = build_app([rig], selected="one")
+        seen = []
+
+        async def ask():
+            port = await agent_port(app, rig)
+            seen.append((port, self.ready))
+
+        async def go():
+            await asyncio.gather(ask(), ask())
+
+        _run(go())
+        self.assertEqual(self.waits, 1)
+        self.assertEqual([ready for _, ready in seen], [True, True])
+        self.assertEqual(len({port for port, _ in seen}), 1)
 
 
 class TestSwitchingRigs(unittest.TestCase):

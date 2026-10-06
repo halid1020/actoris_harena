@@ -151,7 +151,13 @@ tr.lvl-WARN td:first-child { color:#f59e0b; }
 tr.lvl-OK td:first-child { color:#16a34a; }
 
 /* ── Signals pane ───────────────────────────────────────────────────────── */
-#assignments { width:400px; overflow-y:auto; }
+#readings { width:420px; flex-shrink:0; overflow-y:auto; }
+#readings > :not(h2) { margin-left:12px; margin-right:12px; }
+#readings .bar { padding-left:0; padding-right:0; }
+#s-joints th, #s-readings th { text-align:left; font-weight:400; opacity:.7; }
+#s-joints td, #s-readings td { font-variant-numeric:tabular-nums; }
+#s-tiles { padding:8px 12px; }
+#s-tiles img { width:100%; background:#000; border-radius:6px; }
 #s-work { flex:1; overflow:auto; }
 #s-work .bar { position:sticky; top:0; background:Canvas; z-index:1; }
 h3.sub { font-size:12px; text-transform:uppercase; letter-spacing:.05em;

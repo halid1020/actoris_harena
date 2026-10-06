@@ -43,6 +43,7 @@ async function selectRig(name) {
       body: JSON.stringify({rig: name || null}),
     });
     selectedRig = name || null;
+    armBase = null;
   } catch (e) {
     // A running job or session refuses the switch (409); say why, stay put.
     selectedRig = previous;
@@ -79,6 +80,58 @@ $('#rig-go').onclick = async () => {
   // it starts nothing until a tab asks the rig for something.
   await selectRig(rig.name);
 };
+
+// ── The rig's agent, as Signals and Collect both read it ───────────────────
+// Agents are written by each rig and do not all speak alike. The UR3e serves
+// /arm with {joints: {arm: {name: deg}}, readings: [...]}; the dual SO-101
+// serves /arms with the monitor's own shape, {joints: {left: {state: {...}}}},
+// reports cameras it could not open as `missing` rather than `problem`, and
+// answers a failed arm start with an HTTP 500. The page learns both here, once,
+// rather than either rig learning the other's.
+
+let armBase = null;
+
+// Which arm route this rig's agent serves, asked of its /status once per rig.
+async function agentArmBase() {
+  if (!armBase) {
+    const status = await j('/api/agent/status');
+    armBase = ('arms' in status && !('arm' in status))
+      ? '/api/agent/arms' : '/api/agent/arm';
+  }
+  return armBase;
+}
+
+// Either agent's arm reply as {sides: {side: {joint: value}}, readings, age_s}.
+function armView(body) {
+  const snap = body && body.snapshot;
+  let joints = (snap && snap.joints) || {};
+  // A rig with one limb may report it flat, {name: value}.
+  if (Object.values(joints).some(v => typeof v === 'number' || v === null)) {
+    joints = {arm: joints};
+  }
+  const sides = {};
+  for (const side in joints) {
+    const entry = joints[side] || {};
+    // The monitor's shape keeps the measured values under `state`.
+    sides[side] = (entry.state && typeof entry.state === 'object') ? entry.state : entry;
+  }
+  let age = null;
+  if (snap && snap.t_read) age = Math.max(0, Date.now() / 1000 - snap.t_read);
+  else if (snap && typeof snap.joint_drift_s === 'number') age = snap.joint_drift_s;
+  return {sides, readings: (snap && snap.readings) || [], age_s: age,
+          has: !!snap, running: !!(body && body.running),
+          problem: (body && body.problem) || ''};
+}
+
+// What an agent's camera reply says went wrong, in one line, or ''.
+function cameraProblem(body) {
+  if (!body) return '';
+  if (body.problem) return body.problem;
+  return (body.missing || [])
+    .map(m => typeof m === 'string' ? m
+      : `${m.name || 'camera'}: ${m.reason || m.problem || m.error || 'missing'}`)
+    .join('; ');
+}
 
 window.addEventListener('load', () => {
   loadRigs().catch(e => { $('#rigpick').title = e.message; });

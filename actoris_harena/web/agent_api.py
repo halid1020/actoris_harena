@@ -126,9 +126,33 @@ async def _wait_until_answering(session, port: int) -> None:
     )
 
 
+async def agent_port(app: web.Application, rig) -> int:
+    """The rig's agent's port, once it answers. Starts it if it is not up.
+
+    Under a per-rig lock, because a page asks for several things at once: the
+    Signals tab opens the arm and the cameras together. Without it the first
+    request started the agent and waited, the second saw a process already
+    running, skipped the wait, and was refused by a port nothing listened on
+    yet -- an arm that read and a camera that never opened.
+    """
+    lock = app["agent_locks"].setdefault(rig.name, asyncio.Lock())
+    pool = app["agents"]
+    async with lock:
+        already = pool.running(rig.name)
+        port = pool.start(rig)
+        if not already:
+            try:
+                await _wait_until_answering(app.get("http"), port)
+            except AgentError as exc:
+                pool.stop(rig.name)
+                raise web.HTTPBadGateway(text=str(exc)) from exc
+    return port
+
+
 def add_agent_routes(app: web.Application) -> None:
     """Register the Collect and Signals routes, which all proxy to an agent."""
     app["agents"] = AgentPool()
+    app["agent_locks"] = {}
 
     def _selected(request: web.Request):
         name = request.app["rig"]
@@ -140,17 +164,7 @@ def add_agent_routes(app: web.Application) -> None:
         return rig
 
     async def _agent_port(request: web.Request) -> int:
-        rig = _selected(request)
-        pool = request.app["agents"]
-        already = pool.running(rig.name)
-        port = pool.start(rig)
-        if not already:
-            try:
-                await _wait_until_answering(request.app["http"], port)
-            except AgentError as exc:
-                pool.stop(rig.name)
-                raise web.HTTPBadGateway(text=str(exc)) from exc
-        return port
+        return await agent_port(request.app, _selected(request))
 
     async def _proxy(request: web.Request, path: str, method: str = "GET"):
         port = await _agent_port(request)

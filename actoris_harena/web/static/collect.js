@@ -245,11 +245,11 @@ $('#c-arms').onclick = async () => {
   $('#c-arms').disabled = true;
   try {
     if (agentArm) {
-      await postJSON('/api/agent/arm/stop');
+      await postJSON((await agentArmBase()) + '/stop');
       agentArm = false;
       previewJoints = null;
     } else {
-      const r = await postJSON('/api/agent/arm/start');
+      const r = await postJSON((await agentArmBase()) + '/start');
       agentArm = !!r.started;
       if (!r.started) alert(r.problem || 'the arm did not answer');
     }
@@ -267,7 +267,7 @@ $('#c-preview').onclick = async () => {
     } else {
       const r = await postJSON('/api/agent/cameras/start');
       agentCameras = true;
-      if (r.problem) alert(r.problem);
+      if (cameraProblem(r)) alert(cameraProblem(r));
     }
   } catch (e) { alert(e.message); }
   $('#c-preview').disabled = false;
@@ -275,20 +275,16 @@ $('#c-preview').onclick = async () => {
 };
 
 // The agent's arm reading, in the shape renderJoints takes from a monitor:
-// measured state only -- with no session there is no command to show.
+// measured state only -- with no session there is no command to show. The
+// SO-101's agent already answers in that shape; armView reads either.
 async function readPreviewJoints() {
-  const body = await j('/api/agent/arm');
-  const snap = body.snapshot;
-  if (!snap) return null;
-  let joints = snap.joints || {};
-  if (Object.values(joints).some(v => typeof v === 'number')) joints = {arm: joints};
+  const view = armView(await j(await agentArmBase()));
+  if (!view.has) return null;
   const out = {};
-  for (const side in joints) out[side] = {state: joints[side], command: null, fresh: false};
-  return {
-    source: 'preview',
-    joints: out,
-    joint_drift_s: snap.t_read ? Math.max(0, Date.now() / 1000 - snap.t_read) : null,
-  };
+  for (const side in view.sides) {
+    out[side] = {state: view.sides[side], command: null, fresh: false};
+  }
+  return {source: 'preview', joints: out, joint_drift_s: view.age_s};
 }
 
 // ── Controls and signals ────────────────────────────────────────────────────
@@ -393,6 +389,7 @@ async function refreshTiles() {
         const cams = await j('/api/agent/cameras');
         body.streams = cams.streams || [];
         if (cams.problem) body.missing = [{name: 'cameras', reason: cams.problem}];
+        else if (cams.missing) body.missing = cams.missing;
       } catch (e) { body.missing = [{name: 'agent', reason: e.message}]; }
     }
   }
