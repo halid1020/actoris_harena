@@ -122,3 +122,33 @@ class DepthWriter:
         self.flush()
         if ep is not None:
             self._remove_episode(ep)
+
+
+def write_realsense_meta(root: "str | Path", capture, cfg: dict) -> Path:
+    """The RealSense's intrinsics, depth scale and settings, beside its depth.
+
+    Saved once per dataset to ``<root>/meta/realsense.json``, in the field names
+    the SO-101 has always written, so depth is interpretable later and the
+    shared console's Datasets tab can find and colour it for either rig. The
+    camera's extrinsic pose is a physical measurement made separately and is
+    left null for the operator to fill in.
+    """
+    import json
+
+    meta_dir = Path(root) / "meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "rgb_name": capture.name,
+        "depth_name": capture.depth_name,
+        "serial": str(cfg.get("serial") or ""),
+        "width": cfg["width"],
+        "height": cfg["height"],
+        "fps": cfg["fps"],
+        "aligned_to_color": bool(cfg.get("align_to_color", True)),
+        "depth_scale_m_per_unit": capture.depth_scale,
+        "color_intrinsics": capture.intrinsics,
+        "extrinsics_camera_to_rig": None,  # measure + fill in for replicability
+    }
+    path = meta_dir / "realsense.json"
+    path.write_text(json.dumps(payload, indent=2))
+    return path

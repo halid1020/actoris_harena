@@ -69,6 +69,18 @@ SUBPROCESS to catch it.
   `venv/bin/python` is a SYMLINK, so `Path.resolve()` turns it into
   `/usr/bin/python3.12` and hands the agent an environment with none of its rig's
   packages. Paths are made absolute with `normpath` instead, and a test pins it.
+  The page picks the rig in its header and can REGISTER one by directory
+  (`POST /api/console/rigs`, the same `register_rig` as `rigs add`). A rig.yaml's
+  optional `session` block (`SessionSpec`: `inputs`, `sensor_view`,
+  `execute_flag`) says what its teleop accepts. The page offers nothing else,
+  and `web/session.option_refusals` refuses anything else by name, because an
+  unknown flag ends the session at argparse. **`execute_flag` is safety
+  weight**: the UR3e's teleop sends the arm nothing without `--execute`, so
+  without the flag a console session was a silent dry run. With it, the flag is
+  appended only for a literal `execute: true` that a person ticked for that
+  session. A rig that declares none never receives it, and the box is not shown.
+  `static/app.css` was missing from this package (it lived only in
+  `so101_garment`) and is copied in.
 - `recording/frames.py` — three contracts, and the distinctions matter.
   `FramePublisher` is what a capture thread writes into; `TimedFrameSource` is
   what a RECORDER reads, by time, so every stream in a frame is sampled at one

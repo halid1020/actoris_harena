@@ -11,7 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from actoris_harena.recording.depth import DepthWriter
+from actoris_harena.recording.depth import DepthWriter, write_realsense_meta
 
 
 class TestDepthWriter(unittest.TestCase):
@@ -71,3 +71,23 @@ class TestDepthWriter(unittest.TestCase):
             base = Path(tmp) / "extra" / "depth" / "central_depth" / "episode_000002"
             self.assertTrue((base / "000000.png").exists())
             self.assertFalse((base / "000001.png").exists())
+
+
+class TestTheRealSenseMeta(unittest.TestCase):
+    def test_it_names_the_depth_stream_the_datasets_tab_looks_for(self):
+        import json
+        import tempfile
+        from types import SimpleNamespace
+
+        capture = SimpleNamespace(
+            name="top",
+            depth_name="top_depth",
+            depth_scale=0.001,
+            intrinsics={"fx": 1.0},
+        )
+        cfg = {"width": 640, "height": 480, "fps": 30, "serial": "825312073060"}
+        with tempfile.TemporaryDirectory() as d:
+            meta = json.loads(write_realsense_meta(d, capture, cfg).read_text())
+        self.assertEqual(meta["depth_name"], "top_depth")
+        self.assertEqual(meta["depth_scale_m_per_unit"], 0.001)
+        self.assertIsNone(meta["extrinsics_camera_to_rig"])

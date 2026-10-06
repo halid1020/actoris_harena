@@ -109,13 +109,15 @@ def selection_to_teleop_flags(
     depth: bool,
     record_ee: bool,
     fps: "int | None" = None,
+    depth_flag: str = "--central-depth",
 ) -> "list[str]":
     """Flags that reproduce this stream selection for the teleop recorder.
 
     ``known_cameras`` is every UVC camera name in ``recording.yaml``; each is
     explicitly enabled or disabled so the resolved set equals ``enabled_uvc``
     whatever the yaml defaults are (essential when resuming, where the recorded
-    camera set must be matched exactly). ``depth`` adds ``--central-depth``;
+    camera set must be matched exactly). ``depth`` adds ``depth_flag`` (the SO-101's ``--central-depth``
+    unless the rig spells it otherwise);
     ``record_ee=False`` adds ``--no-record-ee``; ``fps`` pins ``--dataset-fps``
     when given. Pure — unit-tested.
     """
@@ -126,7 +128,7 @@ def selection_to_teleop_flags(
         else:
             flags += ["--disable-camera", cam]
     if depth:
-        flags.append("--central-depth")
+        flags.append(depth_flag)
     if not record_ee:
         flags.append("--no-record-ee")
     if fps is not None:

@@ -12,10 +12,12 @@ from pathlib import Path
 
 from actoris_harena.recording.features import RobotSchema
 from actoris_harena.recording.monitor_server import joint_snapshot
+from actoris_harena.rigs import SessionSpec
 from actoris_harena.web.session import (
     INTERRUPT_GRACE_S,
     QUIT_GRACE_S,
     SessionSupervisor,
+    option_refusals,
     stop_action,
     teleop_argv,
 )
@@ -70,6 +72,80 @@ class TestTheCommandOneRigGets(unittest.TestCase):
     def test_a_rehearsal_is_requested_not_assumed(self):
         self.assertNotIn("--mock", self.argv())
         self.assertIn("--mock", self.argv(mock=True))
+
+
+UR3E = SessionSpec(inputs=("quest",), execute_flag="--execute", sensor_view=False)
+
+
+class TestDrivingTheRealArmIsAskedForEveryTime(unittest.TestCase):
+    """A rig whose teleop rehearses by default moves only on a person's say-so.
+
+    Without the flag a UR3e session sends the arm nothing and records the
+    targets anyway -- a dry run that looks like a dataset. With it by default,
+    the console would move an arm nobody asked it to.
+    """
+
+    def argv(self, execute_flag, **options):
+        return teleop_argv(
+            Path("/drive"), "d", "t", PLAN, options, 8766, Path("/t.py"), execute_flag
+        )
+
+    def test_the_flag_is_absent_unless_asked_for(self):
+        self.assertNotIn("--execute", self.argv("--execute"))
+        self.assertNotIn("--execute", self.argv("--execute", execute=False))
+
+    def test_only_a_literal_true_asks(self):
+        for loose in ("true", 1, "yes", [1]):
+            with self.subTest(loose=loose):
+                self.assertNotIn("--execute", self.argv("--execute", execute=loose))
+
+    def test_asked_for_it_is_the_rigs_own_flag(self):
+        self.assertEqual(self.argv("--drive", execute=True)[-1], "--drive")
+
+    def test_a_rig_with_no_flag_never_gets_one(self):
+        argv = self.argv(None, execute=True)
+        self.assertNotIn("--execute", argv)
+        self.assertNotIn(None, argv)
+
+    def test_the_supervisor_carries_the_rigs_flag(self):
+        s = SessionSupervisor(
+            root=Path("/drive"),
+            python="/p",
+            teleop=Path("/t.py"),
+            execute_flag="--execute",
+        )
+        self.assertEqual(s.execute_flag, "--execute")
+
+
+class TestOptionsARigCannotHonourAreRefused(unittest.TestCase):
+    """Refused in the plan, by name. A flag the rig's parser does not know ends
+    the session at argparse, after the page said it had started."""
+
+    def test_a_plain_quest_session_is_fine(self):
+        self.assertEqual(option_refusals({"input": "quest"}, UR3E), [])
+        self.assertEqual(option_refusals({"execute": True}, UR3E), [])
+
+    def test_an_input_the_rig_does_not_offer(self):
+        self.assertTrue(option_refusals({"input": "leader"}, UR3E))
+
+    def test_a_desktop_window_the_rig_does_not_have(self):
+        self.assertTrue(option_refusals({"sensor_view": True}, UR3E))
+
+    def test_driving_a_rig_that_declares_no_flag(self):
+        self.assertTrue(option_refusals({"execute": True}, SessionSpec()))
+
+    def test_driving_the_arm_and_rehearsing_at_once(self):
+        self.assertTrue(option_refusals({"execute": True, "mock": True}, UR3E))
+
+    def test_depth_from_a_rig_that_cannot_record_it(self):
+        self.assertTrue(option_refusals({"depth": True}, SessionSpec(depth_flag=None)))
+        self.assertEqual(option_refusals({"depth": True}, SessionSpec()), [])
+
+    def test_the_defaults_refuse_nothing_the_so101_page_sent(self):
+        spec = SessionSpec()
+        for options in ({"input": "leader"}, {"sensor_view": True}, {"mock": True}):
+            with self.subTest(options=options):
+                self.assertEqual(option_refusals(options, spec), [])
 
 
 class TestTheSupervisorNeverGuessesAnInterpreter(unittest.TestCase):

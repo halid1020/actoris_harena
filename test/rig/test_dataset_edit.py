@@ -421,12 +421,44 @@ class TestWritabilityProblem(unittest.TestCase):
                 "actoris_harena.recording.dataset_edit.os.getuid", return_value=1000
             ):
                 statvfs.return_value = mock.Mock(f_flag=0)
-                with mock.patch.object(Path, "stat") as stat:
+                with mock.patch.object(Path, "stat") as stat, mock.patch(
+                    "actoris_harena.recording.dataset_edit.mount_of",
+                    return_value=("/media/usb", "fuseblk"),
+                ):
                     stat.return_value = mock.Mock(st_uid=0)
                     msg = writability_problem(Path(d))
         self.assertIn("owned by uid 0", msg)
         self.assertIn("remount", msg.lower())
+        self.assertIn("/media/usb", msg)
         self.assertNotIn("read-only filesystem", msg)
+
+    def test_a_root_made_directory_on_a_real_filesystem_points_at_chown(self):
+        # `sudo mkdir /media/hdd/ur3e` on the system disk: ext4 keeps real
+        # owners, so remount advice is wrong -- and was given, on the UR3e cell.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch(
+                "actoris_harena.recording.dataset_edit.os.access", return_value=False
+            ), mock.patch(
+                "actoris_harena.recording.dataset_edit.os.statvfs"
+            ) as statvfs, mock.patch(
+                "actoris_harena.recording.dataset_edit.os.getuid", return_value=1000
+            ), mock.patch(
+                "actoris_harena.recording.dataset_edit.mount_of",
+                return_value=("/", "ext4"),
+            ):
+                statvfs.return_value = mock.Mock(f_flag=0)
+                with mock.patch.object(Path, "stat") as stat:
+                    stat.return_value = mock.Mock(st_uid=0)
+                    msg = writability_problem(Path(d))
+        self.assertIn("sudo chown -R 1000:", msg)
+        self.assertNotIn("remount", msg.lower())
+
+    def test_the_mount_of_the_root_is_found(self):
+        from actoris_harena.recording.dataset_edit import mount_of
+
+        mountpoint, fstype = mount_of(Path("/"))
+        self.assertEqual(mountpoint, "/")
+        self.assertTrue(fstype)
 
     def test_a_read_only_mount_says_read_only(self):
         with tempfile.TemporaryDirectory() as d:

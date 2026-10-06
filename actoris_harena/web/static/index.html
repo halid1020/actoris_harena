@@ -1,12 +1,13 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SO-101 rig console</title>
+<title>Rig console</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   <header id="topbar">
-    <span class="brand">SO-101 rig console</span>
+    <span class="brand">Rig console</span>
+    <select id="rigpick" title="which robot this console drives"></select>
     <button class="tab sel" data-pane="datasets">Datasets</button>
     <button class="tab" data-pane="collect">Collect</button>
     <button class="tab" data-pane="signals">Signals</button>
@@ -59,8 +60,8 @@
             <input id="c-task" autocomplete="off" placeholder="fold the towel">
           </label>
           <fieldset id="c-streams"><legend>Camera streams</legend></fieldset>
-          <label class="row"><input type="checkbox" id="c-depth">
-            central RGB-D (RealSense)</label>
+          <label class="row" id="c-depth-row"><input type="checkbox" id="c-depth">
+            record depth (RealSense)</label>
           <label class="row"><input type="checkbox" id="c-ee" checked>
             end-effector features</label>
           <label class="row">Teleoperation
@@ -69,8 +70,15 @@
               <option value="leader">leader arms</option>
             </select>
           </label>
-          <label class="row"><input type="checkbox" id="c-view">
+          <label class="row" id="c-view-row"><input type="checkbox" id="c-view">
             also open the desktop window</label>
+          <label class="row"><input type="checkbox" id="c-mock">
+            rehearse with mocks — no headset, robot or camera</label>
+          <label class="row danger-row" id="c-execute-row" hidden>
+            <input type="checkbox" id="c-execute" autocomplete="off">
+            <strong>drive the real arm</strong> — it moves to home as soon as
+            the session starts. Unticked, the session rehearses and sends the
+            arm nothing.</label>
           <p class="muted" id="c-plan"></p>
           <p class="err" id="c-err"></p>
           <div class="bar">
@@ -121,55 +129,35 @@
           <p class="muted">Measured joints beside the command last written to
           the motors, in URDF degrees; the gripper is its open fraction. This is
           the pair stored as the state and the action of every recorded frame.
-          With no session running, <em>Read the arms</em> opens the follower
-          buses to fill the measured half — torque off, nothing commanded — and
-          lets go of them before a session starts.</p>
+          With no session running, <em>Read the arms</em> asks the rig's agent
+          for the measured half — reading only, nothing commanded — and the
+          agent lets go of the devices before a session starts.</p>
         </div>
       </div>
     </section>
     <section class="pane" id="pane-signals" hidden>
-      <div class="col" id="assignments">
-        <h2>Assignments</h2>
+      <div class="col" id="readings">
+        <h2>Readings</h2>
+        <p class="muted">The selected rig's own devices, through its agent —
+        a process in that rig's interpreter. Reading only: nothing here moves a
+        robot. A running collection session holds the devices, so this tab
+        waits for it to end; the Collect tab shows the session's own view.</p>
+        <p class="muted" id="s-note"></p>
+        <h3 class="sub">Arm</h3>
         <div class="bar">
-          <button id="s-scan">Scan devices</button>
-          <span class="grow muted" id="s-note"></span>
+          <button id="s-arm">Read the arm</button>
+          <span class="grow muted" id="s-arm-state">not reading</span>
         </div>
-        <div class="pad" id="s-map"></div>
+        <table class="checks" id="s-joints"></table>
+        <table class="checks" id="s-readings"></table>
+        <p class="err" id="s-err"></p>
       </div>
       <div id="s-work">
         <div class="bar">
-          <span class="grow muted" id="s-work-title">Pick a device to identify</span>
-          <button id="s-release" hidden>Release</button>
+          <span class="grow muted" id="s-cam-state">cameras closed</span>
+          <button id="s-cams">Open cameras</button>
         </div>
-        <div class="pad">
-          <h3 class="sub">Cameras</h3>
-          <p class="muted">Show a candidate, press a gel or wave in front of it
-          to see which one it is, then give it a name.</p>
-          <div id="s-cams" class="chips"></div>
-          <div id="s-cam-view" hidden>
-            <figure class="tile"><img id="s-cam-img"><figcaption id="s-cam-cap"></figcaption></figure>
-            <div class="bar wrap" id="s-cam-names"></div>
-          </div>
-
-          <h3 class="sub">Arms</h3>
-          <p class="muted">Open a port, wiggle ONE arm by hand, and watch which
-          joints move. Torque stays off — nothing is commanded.</p>
-          <div id="s-ports" class="chips"></div>
-          <div id="s-ticks" hidden>
-            <table class="checks" id="s-ticks-table"></table>
-            <div class="bar wrap">
-              <button data-role="follower" data-side="right">Follower right</button>
-              <button data-role="follower" data-side="left">Follower left</button>
-              <button data-role="leader" data-side="right">Leader right</button>
-              <button data-role="leader" data-side="left">Leader left</button>
-              <button id="s-rebase">Re-zero</button>
-            </div>
-          </div>
-
-          <h3 class="sub">Depth camera</h3>
-          <div id="s-rs" class="chips"></div>
-          <p class="err" id="s-err"></p>
-        </div>
+        <div class="tiles" id="s-tiles"></div>
       </div>
     </section>
 
@@ -321,6 +309,22 @@
     </menu>
   </dialog>
 
+  <dialog id="dlg-rig">
+    <h3>Register a rig</h3>
+    <p class="muted">A rig is a repository with a <code>rig.yaml</code> at its
+    top — its interpreter, its device agent and its teleoperation entry point.
+    Registering remembers it in <code>~/.config/actoris_harena/rigs.yaml</code>,
+    the same list <code>actoris-harena rigs add</code> writes. Nothing is opened
+    until the rig is selected and used.</p>
+    <label>Directory <input id="rig-root" autocomplete="off" spellcheck="false"
+      placeholder="/home/you/Projects/ur3e_raven"></label>
+    <p class="err" id="rig-err"></p>
+    <menu class="bar">
+      <button data-close="dlg-rig">Cancel</button>
+      <button id="rig-go">Register</button>
+    </menu>
+  </dialog>
+
   <dialog id="dlg-confirm">
     <h3 id="confirm-title">Are you sure?</h3>
     <p id="confirm-body"></p>
@@ -335,16 +339,16 @@
   <dialog id="dlg-new">
     <h3>New dataset</h3>
     <p class="muted">A dataset comes into being when the first episode is
-    recorded into it, so this checks the name and hands you the command that
-    starts the session. Starting it from here arrives with the Collect tab.</p>
+    recorded into it, so this checks the name and takes it, with the
+    instruction, to the Collect tab, where the session that records it is
+    started.</p>
     <label>Name <input id="new-name" autocomplete="off" spellcheck="false"></label>
     <label>Instruction <input id="new-task" autocomplete="off"
       placeholder="fold the towel"></label>
     <p class="err" id="new-err"></p>
-    <pre id="new-cmd" hidden></pre>
     <menu class="bar">
       <button data-close="dlg-new">Close</button>
-      <button id="new-go">Show the command</button>
+      <button id="new-go">Continue in Collect</button>
     </menu>
   </dialog>
 
@@ -391,6 +395,7 @@
   <script src="/static/lifecycle.js"></script>
   <script src="/static/jobs.js"></script>
   <script src="/static/roots.js"></script>
+  <script src="/static/rigs.js"></script>
   <script src="/static/collect.js"></script>
   <script src="/static/signals.js"></script>
   <script src="/static/chart.js"></script>

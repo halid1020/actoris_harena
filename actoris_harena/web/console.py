@@ -12,7 +12,9 @@ pyrealsense2, and could not: this rig's venv and the next one's cannot both
 exist in one environment.
 
 The rig is chosen in the page. ``/api/console`` says which rigs are known and
-which is selected; ``/api/console/rig`` selects one.
+which is selected; ``/api/console/rig`` selects one, and ``/api/console/rigs``
+registers a new one by its directory -- the same validation and the same
+registry file as ``actoris-harena rigs add``, so no restart is needed.
 
 The Collect and Signals tabs ARE served here, through ``web/agent_api.py``, which
 proxies every one of their routes to the selected rig's agent. Nothing in this
@@ -27,15 +29,18 @@ MANAGEMENT half (listing, marking, deleting, merging, compacting) is here, in
 """
 
 import os
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import aiohttp  # type: ignore[import]
 from aiohttp import web  # type: ignore[import]
+from aiohttp.web_runner import GracefulExit  # type: ignore[import]
 
 from actoris_harena.outputs import output_root
-from actoris_harena.rigs import Rig
-from actoris_harena.web.agent_api import add_agent_routes
+from actoris_harena.rigs import Rig, RigError, load_rig, register_rig
+from actoris_harena.web.agent_api import add_agent_routes, stop_agent
+from actoris_harena.web.datasets_api import add_dataset_routes
 from actoris_harena.web.jobs import add_job_routes
 from actoris_harena.web.lifecycle_api import add_lifecycle_routes
 from actoris_harena.web.projects_api import add_project_routes
@@ -69,6 +74,12 @@ def _rig_json(rig: Rig) -> "dict":
                 "state_dim": rig.schema.state_dim,
             }
         ),
+        "session": {
+            "inputs": list(rig.session.inputs),
+            "execute_flag": rig.session.execute_flag,
+            "sensor_view": bool(rig.session.sensor_view),
+            "depth_flag": rig.session.depth_flag,
+        },
     }
 
 
@@ -77,6 +88,7 @@ def build_app(
     collection_dir: "str | None" = None,
     selected: "str | None" = None,
     monitor_port: int = 8766,
+    registry: "str | None" = None,
 ) -> web.Application:
     """Compose the console over a set of rigs. Opens no device and no rig."""
     preinit_tqdm_lock()
@@ -108,6 +120,8 @@ def build_app(
     # console that silently picked the only rig would look identical to one that
     # had picked the wrong one when a second appeared.
     app["rig"] = selected
+    # Which registry file the register route writes; None is the user's own.
+    app["registry"] = registry
 
     async def handle_console(request: web.Request) -> web.Response:
         """What the page needs to describe itself: the drive, and the robots."""
@@ -145,9 +159,43 @@ def build_app(
         # silently -- the second open succeeds and then delivers nothing.
         previous = request.app["rig"]
         if previous is not None and previous != name:
-            request.app["agents"].stop(previous)
+            await stop_agent(request.app, previous)
         request.app["rig"] = name
         return web.json_response({"rig": name})
+
+    async def handle_register_rig(request: web.Request) -> web.Response:
+        """Register a rig directory and make it selectable at once.
+
+        Loopback only, like everything else here: the console binds 127.0.0.1.
+        What it can register is a directory with a valid rig.yaml whose
+        interpreter and agent exist -- `load_rig` refuses anything less -- and
+        registering selects nothing, so it starts no agent and opens no device.
+        """
+        body = await request.json() if request.can_read_body else {}
+        root = str(body.get("root") or "").strip()
+        if not root:
+            raise web.HTTPBadRequest(text="give the rig's directory")
+        known = request.app["rigs"]
+        # Checked against what this console has loaded BEFORE anything is
+        # saved, so a refused rig is not left behind in the registry.
+        try:
+            candidate = load_rig(root)
+        except RigError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        same = known.get(candidate.name)
+        if same is not None and same.root != candidate.root:
+            raise web.HTTPConflict(
+                text=(
+                    f"a rig called {candidate.name!r} is already loaded from "
+                    f"{same.root}; the console addresses rigs by name"
+                )
+            )
+        try:
+            rig = register_rig(root, request.app["registry"])
+        except RigError as exc:
+            raise web.HTTPConflict(text=str(exc))
+        known[rig.name] = rig
+        return web.json_response(_rig_json(rig))
 
     async def open_client(a: web.Application) -> None:
         a["http"] = aiohttp.ClientSession()
@@ -162,8 +210,10 @@ def build_app(
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/console", handle_console)
     app.router.add_post("/api/console/rig", handle_select_rig)
+    app.router.add_post("/api/console/rigs", handle_register_rig)
     add_root_routes(app)
     add_lifecycle_routes(app)
+    add_dataset_routes(app)
     add_project_routes(app)
     add_job_routes(app)
     add_training_routes(app)
@@ -181,14 +231,25 @@ def serve(
     collection_dir: "str | None" = None,
     port: int = 8000,
     selected: "str | None" = None,
+    registry: "str | None" = None,
 ) -> int:
     """Run the console until interrupted. Returns a process exit code."""
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
-    app = build_app(rigs, collection_dir=collection_dir, selected=selected)
+    app = build_app(
+        rigs, collection_dir=collection_dir, selected=selected, registry=registry
+    )
     names = ", ".join(sorted(app["rigs"])) or "none registered"
     print(f"🖥️  console on http://127.0.0.1:{port}/   rigs: {names}")
     if app["root"] is not None:
         print(f"   collection: {app['root']}")
+    # Closing the terminal window sends SIGHUP, which aiohttp does not handle:
+    # the console died with no cleanup at all and the session it started ran
+    # on. A hangup is now an ordinary exit, through the same shutdown hooks.
+    signal.signal(signal.SIGHUP, _hang_up)
     web.run_app(app, host="127.0.0.1", port=port, print=None)
     return 0
+
+
+def _hang_up(_signum, _frame) -> None:
+    raise GracefulExit()

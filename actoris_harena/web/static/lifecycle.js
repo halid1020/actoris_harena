@@ -33,7 +33,7 @@ window.onDatasetsLoaded = () => {
 // ── New ─────────────────────────────────────────────────────────────────────
 
 $('#ds-new').onclick = () => {
-  $('#new-err').textContent = ''; $('#new-cmd').hidden = true;
+  $('#new-err').textContent = '';
   openDialog('dlg-new');
   $('#new-name').focus();
 };
@@ -41,7 +41,6 @@ $('#ds-new').onclick = () => {
 $('#new-go').onclick = async () => {
   const name = $('#new-name').value.trim();
   const task = $('#new-task').value.trim();
-  $('#new-cmd').hidden = true;
   let check;
   try {
     check = await j('/api/datasets/check-name', {
@@ -51,12 +50,15 @@ $('#new-go').onclick = async () => {
   } catch (e) { $('#new-err').textContent = e.message; return; }
   if (!check.ok) { $('#new-err').textContent = check.problem; return; }
   if (!task) { $('#new-err').textContent = 'give the dataset an instruction'; return; }
+  // It used to print a terminal command for one rig's own collection tool,
+  // which no other rig has. The Collect tab starts the selected rig's session
+  // and the first episode it saves is what creates the dataset.
   $('#new-err').textContent = '';
-  const root = $('#rootdir').dataset.path || '<collection directory>';
-  $('#new-cmd').textContent =
-    `venv/bin/python tool/collect_dataset.py \\\n`
-    + `    --dir ${root} --name ${name} --task ${JSON.stringify(task)}`;
-  $('#new-cmd').hidden = false;
+  $('#dlg-new').close();
+  $('#c-name').value = name;
+  $('#c-task').value = task;
+  showPane('collect');
+  $('#c-name').dispatchEvent(new Event('change'));
 };
 
 // ── Rename ──────────────────────────────────────────────────────────────────

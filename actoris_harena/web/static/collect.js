@@ -9,6 +9,11 @@ let controlsByMode = {};
 let collectTimer = null;
 let tileTimer = null;
 let tileBusy = false;
+// The idle preview, through the rig's agent (/api/agent/*): whether this page
+// asked it for the cameras and for the arm. Reset whenever a rig changes.
+let agentCameras = false;
+let agentArm = false;
+let previewJoints = null;
 
 // The tiles are moving pictures, so they refresh far more often than the
 // session status does. They can afford to: one request carries every camera.
@@ -18,8 +23,32 @@ function collectVisible() {
   return !document.querySelector('#pane-collect').hidden;
 }
 
+const INPUT_LABELS = {quest: 'Quest headset', leader: 'leader arms'};
+
+// What this rig's teleop accepts, from its rig.yaml: the page offers nothing
+// else, because a flag the rig does not know ends its session at argparse.
+function applySessionSpec(spec) {
+  spec = spec || {inputs: ['quest', 'leader'], execute_flag: null, sensor_view: true,
+                  depth_flag: '--central-depth'};
+  const input = $('#c-input');
+  const was = input.value;
+  input.innerHTML = spec.inputs.map(i =>
+    `<option value="${i}">${INPUT_LABELS[i] || i}</option>`).join('');
+  if (spec.inputs.includes(was)) input.value = was;
+  $('#c-view-row').hidden = !spec.sensor_view;
+  if (!spec.sensor_view) $('#c-view').checked = false;
+  // A rig whose teleop cannot record depth is not offered the box.
+  $('#c-depth-row').hidden = !spec.depth_flag;
+  if (!spec.depth_flag) $('#c-depth').checked = false;
+  // Unticked every time the form is built: driving the real arm is a choice
+  // made for one session, never remembered and never carried across rigs.
+  $('#c-execute').checked = false;
+  $('#c-execute-row').hidden = !spec.execute_flag;
+}
+
 async function loadCollectConfig() {
   const cfg = await j('/api/collect/config');
+  applySessionSpec(cfg.session);
   rigSchema = cfg.schema || null;
   controlsByMode = cfg.controls || {};
   renderControls(controlsByMode[$('#c-input').value]);
@@ -54,6 +83,10 @@ function sessionRequest() {
     ee: $('#c-ee').checked,
     input: $('#c-input').value,
     sensor_view: $('#c-view').checked,
+    mock: $('#c-mock').checked,
+    // Sent only from a visible, ticked box; the server adds the rig's flag
+    // only for a literal true, and only if the rig declared one.
+    execute: !$('#c-execute-row').hidden && $('#c-execute').checked,
   };
 }
 
@@ -64,7 +97,12 @@ function describePlan(plan) {
     `depth ${plan.depth ? 'on' : 'off'}`,
     `ee ${plan.ee ? 'on' : 'off'}`,
     `fps ${plan.fps || 'default'}`,
-  ];
+    // A rig that rehearses unless told otherwise says so here, so a dry run
+    // is never mistaken for a recording of the arm moving.
+    plan.execute ? 'REAL ARM'
+      : $('#c-mock').checked ? 'mock rehearsal'
+      : !$('#c-execute-row').hidden ? 'dry run — the arm is sent nothing' : '',
+  ].filter(Boolean);
   return bits.join(' · ') + (plan.warnings.length ? '\n' + plan.warnings.join('\n') : '');
 }
 
@@ -204,25 +242,54 @@ document.addEventListener('keydown', (e) => {
   button.click();
 });
 
+const postJSON = (url) => j(url, {
+  method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+
 $('#c-arms').onclick = async () => {
-  const on = $('#c-arms').dataset.on === '1';
   $('#c-arms').disabled = true;
   try {
-    await j(on ? '/api/preview/arms/stop' : '/api/preview/arms/start',
-            {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    if (agentArm) {
+      await postJSON((await agentArmBase()) + '/stop');
+      agentArm = false;
+      previewJoints = null;
+    } else {
+      const r = await postJSON((await agentArmBase()) + '/start');
+      agentArm = !!r.started;
+      if (!r.started) alert(r.problem || 'the arm did not answer');
+    }
   } catch (e) { alert(e.message); }
   $('#c-arms').disabled = false;
   await pollSession();
 };
 
 $('#c-preview').onclick = async () => {
-  const on = $('#c-preview').dataset.on === '1';
+  $('#c-preview').disabled = true;
   try {
-    await j(on ? '/api/preview/stop' : '/api/preview/start',
-            {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    if (agentCameras) {
+      await postJSON('/api/agent/cameras/stop');
+      agentCameras = false;
+    } else {
+      const r = await postJSON('/api/agent/cameras/start');
+      agentCameras = true;
+      if (cameraProblem(r)) alert(cameraProblem(r));
+    }
   } catch (e) { alert(e.message); }
+  $('#c-preview').disabled = false;
   await refreshTiles();
 };
+
+// The agent's arm reading, in the shape renderJoints takes from a monitor:
+// measured state only -- with no session there is no command to show. The
+// SO-101's agent already answers in that shape; armView reads either.
+async function readPreviewJoints() {
+  const view = armView(await j(await agentArmBase()));
+  if (!view.has) return null;
+  const out = {};
+  for (const side in view.sides) {
+    out[side] = {state: view.sides[side], command: null, fresh: false};
+  }
+  return {source: 'preview', joints: out, joint_drift_s: view.age_s};
+}
 
 // ── Controls and signals ────────────────────────────────────────────────────
 
@@ -291,7 +358,7 @@ function renderJoints(monitor) {
     return;
   }
   if (preview) {
-    $('#c-teleop').textContent = 'reading the arms — torque off, nothing commanded';
+    $('#c-teleop').textContent = 'reading the arm through the rig agent — nothing is commanded';
     $('#c-drift').textContent =
       `last read ${((monitor.joint_drift_s || 0) * 1000).toFixed(0)} ms ago`;
     return;
@@ -316,6 +383,20 @@ async function refreshTiles() {
   let body;
   try { body = await j('/api/live/frames'); }
   catch (e) { return; }
+  // No session: the pictures come from the rig's agent, one MJPEG stream per
+  // camera, and only if this page asked it to open them.
+  const fromAgent = body.source === 'agent';
+  if (fromAgent) {
+    body = {source: 'preview', streams: [], frames: {}, missing: []};
+    if (agentCameras) {
+      try {
+        const cams = await j('/api/agent/cameras');
+        body.streams = cams.streams || [];
+        if (cams.problem) body.missing = [{name: 'cameras', reason: cams.problem}];
+        else if (cams.missing) body.missing = cams.missing;
+      } catch (e) { body.missing = [{name: 'agent', reason: e.message}]; }
+    }
+  }
   const names = body.streams || [];
   const missing = body.missing || [];
   const preview = body.source === 'preview';
@@ -328,17 +409,19 @@ async function refreshTiles() {
       : '';
     note.hidden = !missing.length;
   }
-  $('#c-preview').dataset.on = (preview && names.length) ? '1' : '0';
-  $('#c-preview').textContent = (preview && names.length)
-    ? 'Stop preview' : 'Start preview';
+  $('#c-preview').dataset.on = agentCameras ? '1' : '0';
+  $('#c-preview').textContent = agentCameras ? 'Stop preview' : 'Start preview';
   $('#c-preview').disabled = !preview;
   $('#live-source').textContent = names.length
     ? (preview ? 'preview (no session running)' : 'live from the session')
     : 'no live view';
   // Rebuild the tile elements only when the stream SET changes; the pictures
   // themselves are repainted every tick below.
-  if (names.join() !== liveStreams.join()) {
-    liveStreams = names;
+  // Keyed on the source too: the same camera name from the agent is an MJPEG
+  // src set once, from a session a picture repainted every tick.
+  const key = names.map(n => (fromAgent ? 'agent:' : 'session:') + n);
+  if (key.join() !== liveStreams.join()) {
+    liveStreams = key;
     liveTiles = {};
     const tiles = $('#live-tiles'); tiles.innerHTML = '';
     for (const name of names) {
@@ -346,6 +429,7 @@ async function refreshTiles() {
       fig.className = 'tile';
       const img = document.createElement('img');
       img.alt = name;
+      if (fromAgent) img.src = '/api/agent/cameras/' + encodeURIComponent(name);
       const cap = document.createElement('figcaption');
       cap.textContent = name;
       fig.append(img, cap);
@@ -407,7 +491,8 @@ async function pollSession() {
     $('#c-running').textContent =
       `${s.resuming ? 'resuming' : 'recording into'} '${s.name}' — ${s.task}\n`
       + `cameras ${(s.cameras || []).join('+')} · depth ${s.depth ? 'on' : 'off'}`
-      + ` · ee ${s.ee ? 'on' : 'off'}`;
+      + ` · ee ${s.ee ? 'on' : 'off'}`
+      + (s.execute ? ' · REAL ARM' : (s.mock ? ' · mock rehearsal' : ''));
     const m = s.monitor, rec = m && m.recorder;
     const armed = !!m && m.arms === 'ENABLED';
     const leading = s.input === 'leader';
@@ -435,10 +520,17 @@ async function pollSession() {
     $('#c-stop').disabled = !!s.stopping;
     $('#c-stop').textContent = s.stopping ? 'Stopping…' : 'Stop session';
   }
-  renderJoints(s.monitor || s.preview_joints);
+  if (s.running) {
+    // The session took the devices from the agent when it started.
+    agentArm = agentCameras = false;
+    previewJoints = null;
+  } else if (agentArm) {
+    try { previewJoints = await readPreviewJoints(); } catch (e) { previewJoints = null; }
+  }
+  renderJoints(s.monitor || previewJoints);
   $('#c-arms').hidden = !!s.running;
-  $('#c-arms').dataset.on = s.preview_joints ? '1' : '0';
-  $('#c-arms').textContent = s.preview_joints ? 'Stop reading' : 'Read the arms';
+  $('#c-arms').dataset.on = agentArm ? '1' : '0';
+  $('#c-arms').textContent = agentArm ? 'Stop reading' : 'Read the arms';
   if (s.running) renderControls(s.controls);
   $('#session-log').textContent = (s.tail || []).slice(-200).join('\n');
   $('#session-log').scrollTop = $('#session-log').scrollHeight;
@@ -486,6 +578,15 @@ window.addEventListener('load', () => {
   // straight on #collect has to be told once, here.
   if (collectVisible()) window.onPaneShown('collect');
 });
+
+// The header's picker changed rig: this form describes the old one.
+window.onRigChanged = () => {
+  agentArm = agentCameras = false;
+  previewJoints = null;
+  $('#c-err').textContent = ''; $('#c-plan').textContent = '';
+  loadCollectConfig().catch(e => { $('#c-err').textContent = e.message; });
+  pollSession();
+};
 
 window.onPaneShown = (name) => {
   if (name === 'collect') {

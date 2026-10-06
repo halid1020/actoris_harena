@@ -79,13 +79,49 @@ def writability_problem(path: Path) -> str:
     except OSError:
         return f"{path} is not writable"
     if owner != os.getuid():
+        mountpoint, fstype = mount_of(path)
+        if fstype in _INVENTED_OWNERSHIP:
+            return (
+                f"{path} is owned by uid {owner}, not you (uid {os.getuid()}) — "
+                f"the drive ({fstype}) is mounted without your ownership. Remount "
+                f"it with your uid, e.g. sudo mount -o remount,uid={os.getuid()},"
+                f"gid={os.getgid()} {mountpoint}"
+            )
+        # A filesystem with real ownership: the directory was made by someone
+        # else, most often `sudo mkdir`. No mount option changes that.
         return (
-            f"{path} is owned by uid {owner}, not you (uid {os.getuid()}) — the "
-            "drive is mounted without your ownership. Remount it with your uid, "
-            f"e.g. sudo mount -o remount,uid={os.getuid()},gid={os.getgid()} "
-            f"<mountpoint>"
+            f"{path} is owned by uid {owner}, not you (uid {os.getuid()}) — give "
+            f"it to yourself: sudo chown -R {os.getuid()}:{os.getgid()} {path}"
         )
     return f"{path} is not writable by you"
+
+
+#: Filesystems with no ownership of their own, which invent an owner from the
+#: uid the mount was given. Anywhere else, a file's owner is real.
+_INVENTED_OWNERSHIP = frozenset({"vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "msdos"})
+
+
+def mount_of(path: Path) -> "tuple[str, str]":
+    """``(mountpoint, fstype)`` of the filesystem holding ``path``.
+
+    The longest mountpoint in /proc/mounts that contains it; ``("", "")`` off
+    Linux, where the advice falls back to the real-ownership case.
+    """
+    best = ("", "")
+    try:
+        lines = Path("/proc/mounts").read_text().splitlines()
+    except OSError:
+        return best
+    target = os.path.realpath(path)
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        mountpoint = fields[1].replace("\\040", " ")
+        inside = target == mountpoint or target.startswith(mountpoint.rstrip("/") + "/")
+        if inside and len(mountpoint) > len(best[0]):
+            best = (mountpoint, fields[2])
+    return best
 
 
 def deletion_mapping(total: int, to_delete: "list[int]") -> "dict[int, int]":

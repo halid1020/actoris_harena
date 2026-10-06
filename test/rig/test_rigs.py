@@ -18,6 +18,7 @@ from actoris_harena.rigs import (
     discover,
     load_registry,
     load_rig,
+    register_rig,
     save_registry,
 )
 
@@ -115,6 +116,57 @@ class TestLoadingOneRig(unittest.TestCase):
             load_rig(_rig_dir(schema={"limbs": ["a"], "body_joints": ["b"], "dof": 6}))
 
 
+class TestWhatATeleopAccepts(unittest.TestCase):
+    def test_a_rig_that_says_nothing_gets_what_the_console_always_offered(self):
+        spec = load_rig(_rig_dir()).session
+        self.assertEqual(spec.inputs, ("quest", "leader"))
+        self.assertTrue(spec.sensor_view)
+        self.assertIsNone(spec.execute_flag)
+
+    def test_a_session_block_is_read(self):
+        rig = load_rig(
+            _rig_dir(
+                session={
+                    "inputs": ["quest"],
+                    "execute_flag": "--execute",
+                    "sensor_view": False,
+                }
+            )
+        )
+        self.assertEqual(rig.session.inputs, ("quest",))
+        self.assertEqual(rig.session.execute_flag, "--execute")
+        self.assertFalse(rig.session.sensor_view)
+
+    def test_an_unknown_session_key_is_refused_by_name(self):
+        with self.assertRaisesRegex(RigError, "execute"):
+            load_rig(_rig_dir(session={"execute": True}))
+
+    def test_an_execute_flag_must_be_one_flag(self):
+        # It is appended to an argv verbatim: a value, or two words, would
+        # change what the rig's parser hears.
+        for bad in ("execute", "--", "--execute --mock", "-x"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(RigError):
+                    load_rig(_rig_dir(session={"execute_flag": bad}))
+
+
+class TestWhichFlagRecordsDepth(unittest.TestCase):
+    def test_the_default_is_the_so101s_spelling(self):
+        self.assertEqual(load_rig(_rig_dir()).session.depth_flag, "--central-depth")
+
+    def test_a_rig_names_its_own(self):
+        rig = load_rig(_rig_dir(session={"depth_flag": "--record-depth"}))
+        self.assertEqual(rig.session.depth_flag, "--record-depth")
+
+    def test_null_means_depth_is_not_offered(self):
+        rig = load_rig(_rig_dir(session={"depth_flag": None}))
+        self.assertIsNone(rig.session.depth_flag)
+
+    def test_it_must_be_one_flag(self):
+        with self.assertRaises(RigError):
+            load_rig(_rig_dir(session={"depth_flag": "--a --b"}))
+
+
 class TestTheCommandsARigIsDrivenBy(unittest.TestCase):
     def test_the_agent_runs_in_the_rigs_own_interpreter(self):
         rig = load_rig(_rig_dir())
@@ -152,6 +204,24 @@ class TestTheRegistry(unittest.TestCase):
         rigs, problems = discover([good, bad])
         self.assertEqual([r.name for r in rigs], ["demo"])
         self.assertEqual(len(problems), 1)
+
+    def test_registering_remembers_the_rig_once(self):
+        root = _rig_dir()
+        self.assertEqual(register_rig(root, self.path).name, "demo")
+        register_rig(root, self.path)
+        self.assertEqual(load_registry(self.path), [root.resolve()])
+
+    def test_registering_an_unusable_directory_is_refused_and_not_saved(self):
+        with self.assertRaises(RigError):
+            register_rig(Path(tempfile.mkdtemp()), self.path)
+        self.assertEqual(load_registry(self.path), [])
+
+    def test_registering_a_second_rig_of_the_same_name_is_refused(self):
+        # The console addresses a rig by name; two would make one unreachable.
+        register_rig(_rig_dir(), self.path)
+        with self.assertRaisesRegex(RigError, "already registered"):
+            register_rig(_rig_dir(), self.path)
+        self.assertEqual(len(load_registry(self.path)), 1)
 
     def test_two_rigs_with_one_name_is_reported_not_silently_collapsed(self):
         rigs, problems = discover([_rig_dir(), _rig_dir()])

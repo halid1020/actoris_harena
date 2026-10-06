@@ -28,7 +28,12 @@ from aiohttp import web  # type: ignore[import]
 
 from actoris_harena.recording.monitor_wire import allowed_keys_for
 from actoris_harena.rigs import Rig
-from actoris_harena.web.session import SessionSupervisor, resolve_plan
+from actoris_harena.web.agent_api import stop_agent
+from actoris_harena.web.session import (
+    INTERRUPT_GRACE_S,
+    SessionSupervisor,
+    resolve_plan,
+)
 from actoris_harena.web.util import in_executor
 
 # The live view is polled by an image element, so a slow or absent monitor must
@@ -50,6 +55,17 @@ def schema_json(rig: Rig) -> "dict[str, Any] | None":
         "limbs": list(schema.limbs),
         "body_joints": list(schema.body_joints),
         "gripper": bool(schema.gripper),
+    }
+
+
+def session_json(rig: Rig) -> "dict[str, Any]":
+    """What a rig's teleop accepts, for the page to build its form from."""
+    spec = rig.session
+    return {
+        "inputs": list(spec.inputs),
+        "execute_flag": spec.execute_flag,
+        "sensor_view": bool(spec.sensor_view),
+        "depth_flag": spec.depth_flag,
     }
 
 
@@ -93,6 +109,7 @@ def supervisor(app: web.Application) -> SessionSupervisor:
         python=str(rig.python),
         teleop=Path(rig.teleop),
         monitor_port=int(app.get("monitor_port", 8766)),
+        execute_flag=rig.session.execute_flag,
     )
     app["session_key"] = (rig.name, str(root))
     return app["session"]
@@ -151,6 +168,10 @@ async def handle_collect_config(request: web.Request) -> web.Response:
             # which is the authority anyway, instead of inventing columns for a
             # robot that never declared any.
             "schema": schema_json(rig),
+            # What this rig's teleop accepts: which inputs to offer, whether
+            # the desktop window exists, and whether "drive the real arm" is a
+            # box to show at all.
+            "session": session_json(rig),
             # WHAT THIS PAGE CAN DO, which is not the whole control map. The
             # session's own allow-list is the authority and it admits two keys;
             # everything that moves the robot stays on the headset, where the
@@ -243,6 +264,8 @@ async def _plan_for(request: web.Request, body: "dict[str, Any]") -> "dict[str, 
         body,
         config,
         running(app),
+        None,
+        rig.session,
     )
 
 
@@ -274,7 +297,7 @@ async def handle_session_start(request: web.Request) -> web.Response:
     # preview, and two processes cannot open one camera. The second open
     # succeeds and then delivers nothing, which is the failure that wastes an
     # operator's afternoon.
-    app["agents"].stop(app["rig"])
+    await stop_agent(app, app["rig"])
     try:
         state = await in_executor(app, session.start, name, task, plan, body)
     except RuntimeError as exc:
@@ -334,6 +357,67 @@ async def handle_session_stop(request: web.Request) -> web.Response:
         pass  # the monitor may already be gone; the ladder still applies
     action = await in_executor(app, session.escalate)
     return web.json_response({"running": session.running(), "action": action})
+
+
+# ── Ending it with the console ───────────────────────────────────────────────
+
+#: How often the stop ladder is consulted while the closing console waits.
+EXIT_POLL_S = 0.5
+#: How long past the ladder's last rung the console waits before it gives up
+#: and exits anyway -- never by SIGKILL, which would abandon an open episode and
+#: leave the arm energised; a session still alive then is a person's to end.
+EXIT_PATIENCE_S = 20.0
+
+
+def _say(text: str) -> None:
+    """A line in the console's terminal, which may be gone: closing the window
+    is one of the ways the console ends, and a print to a hung-up terminal
+    raises -- which must not stop the session from being ended."""
+    try:
+        print(text, flush=True)
+    except OSError:
+        pass
+
+
+async def end_session_on_exit(app: web.Application) -> None:
+    """Close the collection session before the console goes.
+
+    The teleop runs in its own process group, on purpose, so a Ctrl+C meant for
+    the console does not land mid-episode. The cost was that closing the
+    console left the session running with nobody watching it, to be found and
+    killed in htop. So the console now ends it the way the Stop button does --
+    Q first, which saves an in-flight episode, closes the dataset and parks the
+    arm, then the same ladder on the clock -- and waits for it.
+    """
+    session = app.get("session")
+    if session is None or not session.running():
+        return
+    _say(
+        "⏹️  the console is closing: ending the collection session first -- "
+        "finishing any episode, closing the dataset, releasing the arm"
+    )
+    session.signal_stop()
+    try:
+        await _press(app, "q")
+    except Exception:  # noqa: BLE001 - the monitor may be gone; the ladder is not
+        pass
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + INTERRUPT_GRACE_S + EXIT_PATIENCE_S
+    told = "wait"
+    while session.running():
+        action = session.escalate()
+        if action != told and action in ("interrupt", "terminate"):
+            signal_name = "SIGINT" if action == "interrupt" else "SIGTERM"
+            _say(f"   the session has not exited; sending it {signal_name}")
+            told = action
+        if loop.time() > deadline:
+            _say(
+                f"⚠️  the session (pid {session.state().get('pid')}) is still "
+                "running; the console is leaving it rather than killing it"
+            )
+            return
+        await asyncio.sleep(EXIT_POLL_S)
+    _say("✅ collection session ended")
 
 
 # ── Watching it ──────────────────────────────────────────────────────────────
@@ -398,6 +482,9 @@ async def handle_live_stream(request: web.Request) -> web.StreamResponse:
 
 
 def add_session_routes(app: web.Application) -> None:
+    # on_shutdown, not on_cleanup: it runs first, while the HTTP client the Q
+    # press needs is still open, and before the agents are released.
+    app.on_shutdown.append(end_session_on_exit)
     app.router.add_get("/api/collect/config", handle_collect_config)
     app.router.add_get("/api/preflight", handle_preflight)
     app.router.add_get("/api/session", handle_session)
