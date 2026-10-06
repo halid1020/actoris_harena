@@ -41,6 +41,19 @@ _WARMUP_FRAMES = 30
 _FRAME_TIMEOUT_MS = 3000  # a first frame has been measured at 2.0 s
 _MAX_RESTARTS = 5
 
+#: How long the COLOUR frame number may stand still while framesets keep
+#: arriving before that counts as a stall. Measured on the UR3e cell's D435 on
+#: USB 2.1: a pipeline started right after another was stopped delivered colour
+#: frame 2 and then nothing, while depth ran on to frame 104 -- every frameset
+#: paired fresh depth with the same colour, nothing timed out, and the recorder
+#: wrote 1500 byte-identical pictures. A frame-set timeout cannot see that.
+_COLOUR_STALL_S = 1.0
+
+#: Fresh colour frames in a row before a restart counts as having worked. One
+#: is not enough: the stall measured above began with a frame, then nothing, so
+#: resetting on the first would restart for ever instead of giving up.
+_RECOVERED_FRAMES = 30
+
 
 class RealSenseCapture:
     """Capture thread for one RealSense: colour (RGB) + aligned 16-bit depth."""
@@ -182,36 +195,40 @@ class RealSenseCapture:
     def _loop(self, data_manager: FramePublisher) -> None:
         frame_count = 0
         stalls = 0
+        fresh_run = 0
+        last_colour: "int | None" = None
+        colour_since = time.monotonic()
+
+        def stall(why: str) -> None:
+            """Restart the pipeline, or give up after too many in a row."""
+            nonlocal stalls, frame_count, fresh_run, last_colour, colour_since
+            stalls += 1
+            fresh_run = 0
+            if stalls > _MAX_RESTARTS:
+                raise RuntimeError(
+                    f"{why}, still after {_MAX_RESTARTS} restarts -- unplug and "
+                    "replug the camera, ideally into a USB 3 port"
+                )
+            print(
+                f"⚠️  RealSense '{self.name}': {why}; restarting its pipeline "
+                f"({stalls}/{_MAX_RESTARTS})"
+            )
+            # Exposure goes back to auto with a new pipeline; lock it again
+            # once the restarted stream has warmed up.
+            frame_count = 0
+            self._restart()
+            last_colour = None
+            colour_since = time.monotonic()
+
         try:
             while not self._stop.is_set() and not data_manager.is_shutdown_requested():
                 if self._pipeline is None:
-                    if not self._restart():
-                        stalls += 1
-                        if stalls > _MAX_RESTARTS:
-                            raise RuntimeError("gave up after repeated restarts")
-                        continue
-                pipeline = self._pipeline
-                if pipeline is None:
+                    stall("the pipeline is not running")
                     continue
-                ok, frames = pipeline.try_wait_for_frames(_FRAME_TIMEOUT_MS)
+                ok, frames = self._pipeline.try_wait_for_frames(_FRAME_TIMEOUT_MS)
                 if not ok:
-                    stalls += 1
-                    if stalls > _MAX_RESTARTS:
-                        raise RuntimeError(
-                            f"no frames after {_MAX_RESTARTS} restarts -- unplug "
-                            "and replug the camera, ideally into a USB 3 port"
-                        )
-                    print(
-                        f"⚠️  RealSense '{self.name}' stalled "
-                        f"({_FRAME_TIMEOUT_MS} ms without a frame); restarting "
-                        f"its pipeline ({stalls}/{_MAX_RESTARTS})"
-                    )
-                    # Exposure goes back to auto with a new pipeline; lock it
-                    # again once the restarted stream has warmed up.
-                    frame_count = 0
-                    self._restart()
+                    stall(f"{_FRAME_TIMEOUT_MS} ms without a frame")
                     continue
-                stalls = 0
                 # Stamp the capture instant before alignment/copy so RGB and
                 # depth share one time on the collector's reference clock.
                 t_capture = time.monotonic()
@@ -219,9 +236,28 @@ class RealSenseCapture:
                     frames = self._align.process(frames)
                 color = frames.get_color_frame()
                 depth = frames.get_depth_frame()
-                if not color or not depth:
+                number = int(color.get_frame_number()) if color else None
+                if not depth or number is None or number == last_colour:
+                    # A stale pair: publish NEITHER half, so depth stays 1:1
+                    # with colour and the recorder's staleness guard pauses
+                    # instead of writing a still picture as a fresh one.
+                    if time.monotonic() - colour_since > _COLOUR_STALL_S:
+                        stuck = (
+                            "no colour"
+                            if last_colour is None
+                            else (f"colour stuck at frame {last_colour}")
+                        )
+                        stall(f"{stuck} while depth runs")
                     continue
-                rgb = np.asanyarray(color.get_data())  # already RGB (rgb8)
+                last_colour = number
+                colour_since = t_capture
+                fresh_run += 1
+                if fresh_run >= _RECOVERED_FRAMES:
+                    stalls = 0
+                # COPIED, as depth is: a view would keep librealsense's buffer
+                # alive for as long as the frame store's history holds it, and
+                # the colour sensor's frame pool is small.
+                rgb = np.array(color.get_data(), copy=True)  # already RGB (rgb8)
                 depth16 = np.asanyarray(depth.get_data()).astype(np.uint16)
                 data_manager.set_rgb_image(rgb, self.name, t_capture=t_capture)
                 data_manager.set_depth_image(
