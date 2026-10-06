@@ -29,11 +29,13 @@ MANAGEMENT half (listing, marking, deleting, merging, compacting) is here, in
 """
 
 import os
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import aiohttp  # type: ignore[import]
 from aiohttp import web  # type: ignore[import]
+from aiohttp.web_runner import GracefulExit  # type: ignore[import]
 
 from actoris_harena.outputs import output_root
 from actoris_harena.rigs import Rig, RigError, load_rig, register_rig
@@ -75,6 +77,7 @@ def _rig_json(rig: Rig) -> "dict":
             "inputs": list(rig.session.inputs),
             "execute_flag": rig.session.execute_flag,
             "sensor_view": bool(rig.session.sensor_view),
+            "depth_flag": rig.session.depth_flag,
         },
     }
 
@@ -238,5 +241,13 @@ def serve(
     print(f"🖥️  console on http://127.0.0.1:{port}/   rigs: {names}")
     if app["root"] is not None:
         print(f"   collection: {app['root']}")
+    # Closing the terminal window sends SIGHUP, which aiohttp does not handle:
+    # the console died with no cleanup at all and the session it started ran
+    # on. A hangup is now an ordinary exit, through the same shutdown hooks.
+    signal.signal(signal.SIGHUP, _hang_up)
     web.run_app(app, host="127.0.0.1", port=port, print=None)
     return 0
+
+
+def _hang_up(_signum, _frame) -> None:
+    raise GracefulExit()

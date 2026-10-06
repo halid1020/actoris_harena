@@ -151,6 +151,13 @@ class TestSelectionToTeleopFlags(unittest.TestCase):
         self.assertIn("--no-record-ee", flags)
         self.assertEqual(flags[flags.index("--dataset-fps") + 1], "30")
 
+    def test_a_rig_spells_its_own_depth_flag(self):
+        flags = selection_to_teleop_flags(
+            {"top"}, {"top"}, depth=True, record_ee=True, depth_flag="--record-depth"
+        )
+        self.assertIn("--record-depth", flags)
+        self.assertNotIn("--central-depth", flags)
+
     def test_ee_on_and_no_depth_omit_flags(self):
         flags = selection_to_teleop_flags(
             {"scene"}, {"scene"}, depth=False, record_ee=True

@@ -137,6 +137,10 @@ class TestOptionsARigCannotHonourAreRefused(unittest.TestCase):
     def test_driving_the_arm_and_rehearsing_at_once(self):
         self.assertTrue(option_refusals({"execute": True, "mock": True}, UR3E))
 
+    def test_depth_from_a_rig_that_cannot_record_it(self):
+        self.assertTrue(option_refusals({"depth": True}, SessionSpec(depth_flag=None)))
+        self.assertEqual(option_refusals({"depth": True}, SessionSpec()), [])
+
     def test_the_defaults_refuse_nothing_the_so101_page_sent(self):
         spec = SessionSpec()
         for options in ({"input": "leader"}, {"sensor_view": True}, {"mock": True}):

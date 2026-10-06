@@ -116,6 +116,8 @@ def option_refusals(options: "dict[str, Any]", spec: SessionSpec) -> "list[str]"
         )
     if options.get("sensor_view") and not spec.sensor_view:
         reasons.append("this rig has no desktop window to open")
+    if options.get("depth") and spec.depth_flag is None:
+        reasons.append("this rig's teleop cannot record depth")
     if options.get("execute") is True:
         if spec.execute_flag is None:
             reasons.append(
@@ -222,6 +224,7 @@ def resolve_plan(
             bool(selection["depth"]),
             bool(selection["ee"]),
             selection["fps"],
+            spec.depth_flag or "--central-depth",
         ),
     }
 

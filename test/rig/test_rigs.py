@@ -150,6 +150,23 @@ class TestWhatATeleopAccepts(unittest.TestCase):
                     load_rig(_rig_dir(session={"execute_flag": bad}))
 
 
+class TestWhichFlagRecordsDepth(unittest.TestCase):
+    def test_the_default_is_the_so101s_spelling(self):
+        self.assertEqual(load_rig(_rig_dir()).session.depth_flag, "--central-depth")
+
+    def test_a_rig_names_its_own(self):
+        rig = load_rig(_rig_dir(session={"depth_flag": "--record-depth"}))
+        self.assertEqual(rig.session.depth_flag, "--record-depth")
+
+    def test_null_means_depth_is_not_offered(self):
+        rig = load_rig(_rig_dir(session={"depth_flag": None}))
+        self.assertIsNone(rig.session.depth_flag)
+
+    def test_it_must_be_one_flag(self):
+        with self.assertRaises(RigError):
+            load_rig(_rig_dir(session={"depth_flag": "--a --b"}))
+
+
 class TestTheCommandsARigIsDrivenBy(unittest.TestCase):
     def test_the_agent_runs_in_the_rigs_own_interpreter(self):
         rig = load_rig(_rig_dir())

@@ -28,7 +28,8 @@ const INPUT_LABELS = {quest: 'Quest headset', leader: 'leader arms'};
 // What this rig's teleop accepts, from its rig.yaml: the page offers nothing
 // else, because a flag the rig does not know ends its session at argparse.
 function applySessionSpec(spec) {
-  spec = spec || {inputs: ['quest', 'leader'], execute_flag: null, sensor_view: true};
+  spec = spec || {inputs: ['quest', 'leader'], execute_flag: null, sensor_view: true,
+                  depth_flag: '--central-depth'};
   const input = $('#c-input');
   const was = input.value;
   input.innerHTML = spec.inputs.map(i =>
@@ -36,6 +37,9 @@ function applySessionSpec(spec) {
   if (spec.inputs.includes(was)) input.value = was;
   $('#c-view-row').hidden = !spec.sensor_view;
   if (!spec.sensor_view) $('#c-view').checked = false;
+  // A rig whose teleop cannot record depth is not offered the box.
+  $('#c-depth-row').hidden = !spec.depth_flag;
+  if (!spec.depth_flag) $('#c-depth').checked = false;
   // Unticked every time the form is built: driving the real arm is a choice
   // made for one session, never remembered and never carried across rigs.
   $('#c-execute').checked = false;

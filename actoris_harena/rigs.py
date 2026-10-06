@@ -63,7 +63,7 @@ _OPTIONAL = frozenset(
         "output_dir",
     }
 )
-_SESSION_KEYS = frozenset({"inputs", "execute_flag", "sensor_view"})
+_SESSION_KEYS = frozenset({"inputs", "execute_flag", "sensor_view", "depth_flag"})
 
 # A rig name reaches a URL and a directory name, and is compared for equality
 # against what a browser sent. Keeping it to this alphabet means it can never
@@ -93,6 +93,11 @@ class SessionSpec:
     inputs: "tuple[str, ...]" = ("quest", "leader")
     execute_flag: "str | None" = None
     sensor_view: bool = True
+    #: The flag that records the RealSense depth stream, or None if the teleop
+    #: cannot. The default is the SO-101's spelling, which was the console's
+    #: only one; a rig whose parser lacks it would exit at argparse when the
+    #: box was ticked.
+    depth_flag: "str | None" = "--central-depth"
 
 
 def _session_spec(path: Path, spec: object) -> SessionSpec:
@@ -104,18 +109,26 @@ def _session_spec(path: Path, spec: object) -> SessionSpec:
     if unknown:
         raise RigError(f"{path}: session has unknown key(s): {sorted(unknown)}")
     inputs = tuple(str(i) for i in (spec.get("inputs") or SessionSpec.inputs))
-    flag = spec.get("execute_flag")
-    if flag is not None:
-        flag = str(flag)
-        # One argv element, and a flag rather than a value: it is appended to
-        # a command line verbatim, so anything else would change its meaning.
-        if not flag.startswith("--") or len(flag) < 3 or any(c.isspace() for c in flag):
-            raise RigError(f"{path}: session.execute_flag {flag!r} must be one --flag")
     return SessionSpec(
         inputs=inputs,
-        execute_flag=flag,
+        execute_flag=_one_flag(path, "execute_flag", spec.get("execute_flag")),
         sensor_view=bool(spec.get("sensor_view", True)),
+        # Absent keeps the default; an explicit null says "no depth here".
+        depth_flag=_one_flag(
+            path, "depth_flag", spec.get("depth_flag", SessionSpec.depth_flag)
+        ),
     )
+
+
+def _one_flag(path: Path, key: str, flag: object) -> "str | None":
+    """One ``--flag``, or None. It is appended to a command line verbatim, so a
+    value, a space or a bare word would change what the command means."""
+    if flag is None:
+        return None
+    flag = str(flag)
+    if not flag.startswith("--") or len(flag) < 3 or any(c.isspace() for c in flag):
+        raise RigError(f"{path}: session.{key} {flag!r} must be one --flag")
+    return flag
 
 
 @dataclass(frozen=True)
