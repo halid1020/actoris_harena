@@ -610,5 +610,20 @@ class WhichFamiliesCanCropWithoutResizingTest(unittest.TestCase):
         self.config_with_mixed_shapes(HarenaActCropConfig).validate_features()
 
 
+class ActionConditionedVideoTest(unittest.TestCase):
+    """The FastWAM crop arm can let its video expert read the action chunk."""
+
+    def test_off_by_default_and_reaches_the_video_expert_when_on(self):
+        from actoris_harena.policies.fastwam_crop.configuration_fastwam_crop import (
+            HarenaFastwamCropConfig,
+        )
+
+        self.assertFalse(
+            HarenaFastwamCropConfig().video_dit_config["action_conditioned"]
+        )
+        on = HarenaFastwamCropConfig(action_conditioned_video=True)
+        self.assertTrue(on.video_dit_config["action_conditioned"])
+
+
 if __name__ == "__main__":
     unittest.main()

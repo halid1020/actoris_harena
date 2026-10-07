@@ -35,3 +35,17 @@ class HarenaFastwamCropConfig(HarenaFastwamConfig):
     tactile_tiled: dict[str, tuple[int, int]] = field(
         default_factory=lambda: {"tactile_quad": (2, 2)}
     )
+    #: Let the VIDEO expert read the action chunk: Wan's action-conditioned DiT,
+    #: in which each latent frame cross-attends to the actions of its own time
+    #: group. Off is the Fast-WAM paper's recipe, where the video never sees an
+    #: action, so no commanded action can change a predicted frame. On adds a
+    #: freshly initialised action embedding; the base weights still load, since
+    #: the flag is not one of the base-compatibility keys. Set here rather than
+    #: in the port, which must stay a copy of upstream.
+    action_conditioned_video: bool = False
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.video_dit_config["action_conditioned"] = bool(
+            self.action_conditioned_video
+        )
