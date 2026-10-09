@@ -69,5 +69,123 @@ class MatrixTest(unittest.TestCase):
         self.assertLess(summary["nearest_train"], summary["nearest_held"])
 
 
+class StateBaselineTest(unittest.TestCase):
+    """``dataset`` replaces each joint by its own training mean."""
+
+    def test_dataset_and_mean_differ(self):
+        from actoris_harena.analysis.perturb import baseline_state
+
+        state = np.array([10.0, -20.0, 0.5], dtype=np.float32)
+        mean = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        self.assertTrue(
+            np.array_equal(baseline_state(state, "dataset", dataset_mean=mean), mean)
+        )
+        self.assertTrue(np.allclose(baseline_state(state, "mean"), state.mean()))
+        with self.assertRaises(ValueError):
+            baseline_state(state, "dataset")
+
+
+class FeatureGroupsTest(unittest.TestCase):
+    """Which feature entries belong to which camera, for every encoder kind."""
+
+    def test_policies_split_into_equal_blocks(self):
+        from actoris_harena.analysis.features import feature_groups
+
+        keys = ["observation.images.central", "observation.images.tip"]
+        groups = feature_groups("act", keys, 8)
+        self.assertEqual(groups, {"central": [0, 1, 2, 3], "tip": [4, 5, 6, 7]})
+
+    def test_dreamzero_tiles_are_cells_of_the_grid(self):
+        from actoris_harena.analysis.features import feature_groups
+
+        keys = [f"observation.images.c{i}" for i in range(5)]
+        groups = feature_groups("dreamzero", keys, 2 * 36)  # 2 channels, 6x6
+        # Camera 0 is the top-left 2x2 cells of each channel.
+        self.assertEqual(groups["c0"], [0, 1, 6, 7, 36, 37, 42, 43])
+        # Camera 4 is the centre tile: rows 2-3, columns 2-3.
+        self.assertEqual(groups["c4"][:4], [14, 15, 20, 21])
+        everything = sorted(i for g in groups.values() for i in g)
+        self.assertEqual(len(everything), len(set(everything)))
+
+    def test_fastwam_halves_in_sorted_order(self):
+        from actoris_harena.analysis.features import feature_groups
+
+        keys = ["observation.images.tactile_quad", "observation.images.central"]
+        groups = feature_groups("fastwam", keys, 32)  # 1 channel, 4x8
+        self.assertEqual(groups["central"][:4], [0, 1, 2, 3])
+        self.assertEqual(groups["tactile_quad"][:4], [4, 5, 6, 7])
+
+
+class AutoencoderGradCamTest(unittest.TestCase):
+    """The gradient reaches a frozen encoder through no_grad-decorated code."""
+
+    def make(self):
+        import torch
+
+        class Encoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = torch.nn.Conv2d(3, 4, 3, padding=1)
+                self.mid_block = torch.nn.Conv2d(4, 4, 1)
+
+            def forward(self, x):
+                return self.mid_block(self.conv(x))
+
+        class Vae(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder = Encoder()
+                self.requires_grad_(False)  # frozen, as the real ones are
+
+        class Holder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.vae = Vae()
+
+            @torch.no_grad()
+            def encode(self, frames):
+                return self.vae.encoder(frames)
+
+        class Policy(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.vae = Holder()
+                self.head = torch.nn.Linear(4, 6)
+
+            @torch.no_grad()
+            def plan(self, frames):
+                features = self.vae.encode(frames)
+                # Only the top-left quarter of the image reaches the plan.
+                return self.head(features[..., :4, :4].mean(dim=(-2, -1)))
+
+        return Policy()
+
+    def test_gradient_reaches_the_frozen_encoder(self):
+        import torch
+
+        from actoris_harena.analysis.gradients import autoencoder_grad_cam
+
+        torch.manual_seed(0)
+        policy = self.make()
+        frames = torch.rand(1, 3, 8, 8)
+        cam = autoencoder_grad_cam(policy, policy.plan, frames)
+        # Grad-CAM weights each channel by its MEAN gradient, so the map is
+        # non-zero wherever a weighted channel is active -- what is tested is
+        # that a gradient arrived at all, through two no_grad decorators.
+        self.assertEqual(cam.shape, (8, 8))
+        self.assertAlmostEqual(float(cam.max()), 1.0)
+        # no_grad behaves normally again afterwards.
+        with torch.no_grad():
+            self.assertFalse(torch.is_grad_enabled())
+
+    def test_split_map_cuts_by_fractions(self):
+        from actoris_harena.analysis.gradients import split_map
+
+        cam = np.arange(16, dtype=float).reshape(4, 4)
+        pieces = split_map(cam, {"left": (0, 0, 1, 0.5), "right": (0, 0.5, 1, 0.5)})
+        self.assertEqual(pieces["left"].shape, (4, 2))
+        self.assertAlmostEqual(float(pieces["right"].max()), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

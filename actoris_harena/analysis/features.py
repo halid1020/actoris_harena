@@ -25,6 +25,7 @@ rename that ran in training runs here too (``Inference.batch`` does that).
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 from torch import Tensor
 from torch.nn import functional as F
@@ -108,3 +109,69 @@ def frame_features(policy, batch: dict) -> Tensor:
         latent = torch.cat(latents)
         parts = [_unit(F.adaptive_avg_pool2d(latent.float(), WAM_GRID[kind]))]
     return torch.cat([p.cpu() for p in parts], dim=1)
+
+
+def feature_groups(
+    kind: str, image_keys: "list[str]", feature_dim: int
+) -> "dict[str, list[int]]":
+    """Which entries of a frame's feature vector belong to which camera.
+
+    The policies join one equal block per camera, in ``config.image_features``
+    order (what :func:`frame_features` iterates). The two world models pool one
+    latent of the whole tiled frame onto a grid, flattened channel-major
+    (``[C, rows, cols]``), so a camera is a set of grid CELLS:
+
+    * DreamZero tiles its cameras row-major on the smallest square grid that
+      fits them; on the 6x6 pooling grid each of its 3x3 tiles is 2x2 cells.
+    * FastWAM sets its inputs side by side in sorted key order; on the 4x8 grid
+      each of its two inputs is a 4x4 half.
+    """
+    names = [key.split(".")[-1] for key in image_keys]
+    if not names:
+        raise ValueError("no cameras to split the features by")
+    if kind in WAM_GRID:
+        rows, cols = WAM_GRID[kind]
+        cells = rows * cols
+        if feature_dim % cells:
+            raise ValueError(f"{feature_dim} features do not fill a {rows}x{cols} grid")
+        channels = feature_dim // cells
+        if kind == "dreamzero":
+            side = int(np.ceil(np.sqrt(len(names))))
+            if rows % side or cols % side:
+                raise ValueError(
+                    f"a {rows}x{cols} grid does not split into {side}x{side} tiles"
+                )
+            tile_r, tile_c = rows // side, cols // side
+            boxes = {
+                name: (i // side * tile_r, i % side * tile_c, tile_r, tile_c)
+                for i, name in enumerate(names)
+            }
+        else:  # fastwam: side by side, sorted
+            ordered = sorted(names)
+            if cols % len(ordered):
+                raise ValueError(
+                    f"{cols} columns do not split into {len(ordered)} inputs"
+                )
+            width = cols // len(ordered)
+            boxes = {
+                name: (0, i * width, rows, width) for i, name in enumerate(ordered)
+            }
+        out = {}
+        for name, (top, left, height, width) in boxes.items():
+            out[name] = [
+                c * cells + r * cols + k
+                for c in range(channels)
+                for r in range(top, top + height)
+                for k in range(left, left + width)
+            ]
+        return out
+    if feature_dim % len(names):
+        raise ValueError(
+            f"{feature_dim} features do not split into {len(names)} cameras"
+        )
+    size = feature_dim // len(names)
+    return {name: list(range(i * size, (i + 1) * size)) for i, name in enumerate(names)}
+
+
+#: Camera names that mean the overhead view, under any model's naming.
+OVERHEAD_NAMES = ("central", "base_0_rgb")

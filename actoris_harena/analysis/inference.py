@@ -247,6 +247,22 @@ class Inference:
             return "diffusion"
         return "tokens"
 
+    def stat_mean(self, key: str) -> "np.ndarray | None":
+        """The training mean of ``key`` (e.g. ``observation.state``), raw units.
+
+        Read off the checkpoint's own normaliser, which is the one statistic
+        the model was trained against. None when no step carries it.
+        """
+        for step in getattr(self.pre, "steps", []) or []:
+            stats = getattr(step, "stats", None) or {}
+            mean = (stats.get(key) or {}).get("mean")
+            if mean is not None:
+                values = (
+                    mean.detach().cpu().numpy() if hasattr(mean, "detach") else mean
+                )
+                return np.asarray(values, dtype=np.float32)
+        return None
+
     # -- the forward pass ---------------------------------------------------
     def batch(self, state: np.ndarray, images: "dict[str, np.ndarray]") -> dict:
         """One observation -> the batch the policy expects, normalised.

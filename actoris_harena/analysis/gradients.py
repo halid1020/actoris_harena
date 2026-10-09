@@ -38,6 +38,7 @@ for -- and are reported beside the occlusion effect they should agree with.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Callable
 
 import numpy as np
@@ -424,3 +425,128 @@ def _ranks(values: "list[float]") -> "list[float]":
             ranks[order[position]] = shared
         index = stop + 1
     return ranks
+
+
+# -- Grad-CAM for the world action models -------------------------------------
+#
+# Their images pass through a FROZEN convolutional autoencoder before any
+# transformer sees them. Frozen means not trained, not non-differentiable: the
+# gradient of the planned chunk flows back through the transformer into the
+# autoencoder's feature maps like through any other layer. What stops it in the
+# code is that every step on the way -- the autoencoder's ``encode``, the
+# sampler, FastWAM's video prefill and action denoiser -- is decorated
+# ``@torch.no_grad()`` to save memory at rollout.
+
+
+@contextlib.contextmanager
+def grad_everywhere(torch):
+    """Let every ``torch.no_grad()`` inside the block keep gradients on.
+
+    The decorators sit on half a dozen nested methods across two model
+    families; unwrapping them one by one would break the next time a method is
+    added. ``no_grad`` enters and exits through two class methods, so those are
+    swapped for the duration and restored on the way out, whatever happens.
+    """
+    enter, leave = torch.no_grad.__enter__, torch.no_grad.__exit__
+
+    def keep_enter(self):
+        self.prev = torch.is_grad_enabled()
+
+    def keep_exit(self, *_exc):
+        torch.set_grad_enabled(self.prev)
+
+    torch.no_grad.__enter__ = keep_enter
+    torch.no_grad.__exit__ = keep_exit
+    try:
+        with torch.enable_grad():
+            yield
+    finally:
+        torch.no_grad.__enter__ = enter
+        torch.no_grad.__exit__ = leave
+
+
+def autoencoder_trunk(policy):
+    """The autoencoder encoder's middle block: the last full-resolution feature map.
+
+    DreamZero holds its image autoencoder as ``policy.vae.vae`` and FastWAM as
+    ``policy.model.vae.vae``; both are diffusers models with ``encoder.mid_block``.
+    """
+    for holder in (
+        getattr(getattr(policy, "model", None), "vae", None),
+        getattr(policy, "vae", None),
+    ):
+        inner = getattr(holder, "vae", None)
+        block = getattr(getattr(inner, "encoder", None), "mid_block", None)
+        if block is not None:
+            return block
+    raise NoFeatureMap("no autoencoder with an encoder.mid_block on this policy")
+
+
+def autoencoder_grad_cam(policy, chunk_fn, batch: dict, target="norm", frame: int = -1):
+    """Grad-CAM over the autoencoder's feature map of the whole (tiled) frame.
+
+    ``chunk_fn(batch)`` must return the planned chunk as a tensor; it runs
+    inside :func:`grad_everywhere`, so the caller only has to pin the sampler.
+    ``frame`` picks which encoded frame to draw when the model encodes a window
+    (DreamZero's last observed frame); FastWAM encodes one. Returns the map at
+    feature resolution, ``(h, w)``, rectified and scaled to peak one.
+    """
+    import torch
+
+    if isinstance(target, str):
+        target = TARGETS[target]
+    activations: "list[Any]" = []
+
+    def keep(_module, _inputs, output):
+        # A frozen encoder fed images that need no gradient builds no graph, so
+        # its output is a plain tensor: make it the leaf the gradient stops at.
+        if output.requires_grad:
+            output.retain_grad()
+        else:
+            output.requires_grad_(True)
+        activations.append(output)
+        return output
+
+    handle = autoencoder_trunk(policy).register_forward_hook(keep)
+    try:
+        policy.zero_grad(set_to_none=True)
+        with grad_everywhere(torch):
+            scalar = target(chunk_fn(batch))
+            scalar.backward()
+    finally:
+        handle.remove()
+    if not activations or activations[-1].grad is None:
+        raise NoFeatureMap(
+            "the planned chunk does not depend on the autoencoder's features"
+        )
+    activation = activations[-1]
+    grad = activation.grad
+    if activation.ndim == 5:  # a video autoencoder: (B, C, T, h, w)
+        activation, grad = activation[:, :, frame], grad[:, :, frame]
+    else:  # an image autoencoder over a flattened window: (B*T, C, h, w)
+        activation, grad = activation[frame], grad[frame]
+        activation, grad = activation.unsqueeze(0), grad.unsqueeze(0)
+    weights = grad.mean(dim=(-2, -1), keepdim=True)
+    cam = (
+        (weights * activation).sum(dim=1)[0].clamp(min=0).detach().float().cpu().numpy()
+    )
+    peak = cam.max()
+    return cam / peak if peak > 0 else cam
+
+
+def split_map(
+    cam: np.ndarray, boxes: "dict[str, tuple[float, float, float, float]]"
+) -> "dict[str, np.ndarray]":
+    """Cut a whole-frame map into cameras by fractional boxes (top, left, h, w).
+
+    Each piece is scaled to its own peak, as every per-camera Grad-CAM map is.
+    """
+    rows, cols = cam.shape
+    out = {}
+    for name, (top, left, height, width) in boxes.items():
+        r0, r1 = int(round(top * rows)), int(round((top + height) * rows))
+        c0, c1 = int(round(left * cols)), int(round((left + width) * cols))
+        piece = cam[r0 : max(r1, r0 + 1), c0 : max(c1, c0 + 1)]
+        peak = piece.max()
+        out[name] = piece / peak if peak > 0 else piece
+    return out

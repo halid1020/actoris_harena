@@ -49,6 +49,11 @@ from actoris_harena.analysis.diffusion import DEFAULT_SEED, plan
 #: so a grasp is won or lost in a number a mean over twelve joints hides.
 
 BASELINES = ("zeros", "mean", "blur", "shuffle")
+#: The proprioception's own baselines. ``dataset`` -- the per-joint training mean,
+#: which is where the normaliser puts zero -- is the default: an average posture
+#: the model has seen near every frame, so replacing the joints with it removes
+#: their information without handing the model an impossible pose.
+STATE_BASELINES = ("dataset", "zeros", "mean", "shuffle")
 
 
 def baseline_frame(
@@ -94,14 +99,26 @@ def baseline_frame(
 
 
 def baseline_state(
-    state: np.ndarray, kind: str, other: "np.ndarray | None" = None
+    state: np.ndarray,
+    kind: str,
+    other: "np.ndarray | None" = None,
+    dataset_mean: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """The proprioceptive vector, replaced. ``blur`` has no meaning here.
 
-    A state of zeros is not a neutral posture -- it is the arms folded into
-    themselves, which is both off-manifold and a specific pose. ``mean`` is the
-    safer default and this says so rather than leaving it to be discovered.
+    ``dataset`` is each joint's mean over the training data (``dataset_mean``,
+    read off the checkpoint's normaliser). A state of zeros is not a neutral
+    posture -- it is the arms folded into themselves, both off-manifold and a
+    specific pose. ``mean`` sets EVERY joint to this one vector's average across
+    joints -- a single number for shoulder, elbow and gripper alike, which is a
+    pose no arm takes. It is kept for the results computed with it, and it is
+    not the default: MEASURED 2026-10-09, it was what every input-contribution
+    figure before this date used for the joints.
     """
+    if kind == "dataset":
+        if dataset_mean is None:
+            raise ValueError("the 'dataset' baseline needs the training mean")
+        return np.asarray(dataset_mean, dtype=state.dtype).reshape(state.shape).copy()
     if kind in ("zeros", "blur"):
         return np.zeros_like(state)
     if kind == "mean":
@@ -151,14 +168,22 @@ def _replace(
     names: "list[str]",
     kind: str,
     alternative: "dict | None" = None,
+    state_kind: "str | None" = None,
+    state_mean: "np.ndarray | None" = None,
 ) -> "tuple[np.ndarray, dict]":
-    """A copy of the observation with the named streams replaced."""
+    """A copy of the observation with the named streams replaced.
+
+    ``state_kind`` replaces the joints by their own baseline (default: the same
+    name as the images', for results computed before the two were separated).
+    """
     alternative = alternative or {}
     out_images = dict(images)
     out_state = state
     for name in names:
         if name == "state":
-            out_state = baseline_state(state, kind, alternative.get("state"))
+            out_state = baseline_state(
+                state, state_kind or kind, alternative.get("state"), state_mean
+            )
         elif name in out_images:
             out_images[name] = baseline_frame(
                 out_images[name], kind, alternative.get(name)
@@ -189,6 +214,8 @@ def occlusion(
     alternative: "dict | None" = None,
     direction: str = "leave_one_out",
     seed: int = DEFAULT_SEED,
+    state_baseline: "str | None" = None,
+    state_mean: "np.ndarray | None" = None,
 ) -> "dict[str, Any]":
     """Every stream's effect on this one observation's plan.
 
@@ -210,7 +237,7 @@ def occlusion(
             [name] if direction == "leave_one_out" else [n for n in names if n != name]
         )
         moved_state, moved_images = _replace(
-            state, images, targets, baseline, alternative
+            state, images, targets, baseline, alternative, state_baseline, state_mean
         )
         effects[name] = chunk_delta(
             reference, plan_of(inference, moved_state, moved_images, seed)
@@ -222,6 +249,7 @@ def occlusion(
     return {
         "direction": direction,
         "baseline": baseline,
+        "state_baseline": state_baseline or baseline,
         "seed": seed,
         "reference": reference,
         "streams": effects,
@@ -232,7 +260,15 @@ def occlusion(
             reference,
             plan_of(
                 inference,
-                *_replace(state, images, names, baseline, alternative),
+                *_replace(
+                    state,
+                    images,
+                    names,
+                    baseline,
+                    alternative,
+                    state_baseline,
+                    state_mean,
+                ),
                 seed,
             ),
         ),
