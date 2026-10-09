@@ -187,5 +187,22 @@ class AutoencoderGradCamTest(unittest.TestCase):
         self.assertAlmostEqual(float(pieces["right"].max()), 1.0)
 
 
+class LastOutputTest(unittest.TestCase):
+    def test_records_and_restores(self):
+        from actoris_harena.analysis.gradients import last_output_of
+
+        class Sampler:
+            def step(self, x):
+                return x + 1
+
+        sampler = Sampler()
+        with last_output_of(sampler, "step") as seen:
+            sampler.step(1)
+            sampler.step(5)
+        self.assertEqual(seen, [2, 6])
+        self.assertNotIn("step", vars(sampler))
+        self.assertEqual(sampler.step(0), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

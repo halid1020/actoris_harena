@@ -550,3 +550,32 @@ def split_map(
         peak = piece.max()
         out[name] = piece / peak if peak > 0 else piece
     return out
+
+
+@contextlib.contextmanager
+def last_output_of(obj, method: str):
+    """Record every value ``obj.method`` returns while the block runs.
+
+    For a model whose public output is detached -- FastWAM's ``infer_action``
+    returns ``latents_action[0].detach()`` -- the last value its sampler's
+    ``step`` produced is the same chunk with its graph still attached. The
+    method is wrapped on the INSTANCE and restored afterwards, so the class
+    and every other instance are untouched.
+    """
+    seen: "list[Any]" = []
+    original = getattr(obj, method)
+    own = vars(obj).get(method)  # set on the instance itself, not its class
+
+    def recording(*args, **kwargs):
+        value = original(*args, **kwargs)
+        seen.append(value)
+        return value
+
+    setattr(obj, method, recording)
+    try:
+        yield seen
+    finally:
+        if own is None:
+            delattr(obj, method)
+        else:
+            setattr(obj, method, own)
