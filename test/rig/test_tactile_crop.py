@@ -625,5 +625,102 @@ class ActionConditionedVideoTest(unittest.TestCase):
         self.assertTrue(on.video_dit_config["action_conditioned"])
 
 
+class SeparateTactileBackboneTest(unittest.TestCase):
+    """ACT with one encoder for the overhead camera and one for the fingertips."""
+
+    def policy(self, separate):
+        from lerobot.configs.types import FeatureType, PolicyFeature
+
+        from actoris_harena.policies.act_crop.configuration_act_crop import (
+            HarenaActCropConfig,
+        )
+        from actoris_harena.policies.act_crop.modeling_act_crop import (
+            HarenaActCropPolicy,
+        )
+
+        config = HarenaActCropConfig(
+            device="cpu",
+            pretrained_backbone_weights=None,
+            tactile_crop=(1.0, 1.0),
+            separate_tactile_backbone=separate,
+            dim_model=32,
+            n_heads=2,
+            dim_feedforward=64,
+            n_encoder_layers=1,
+            n_vae_encoder_layers=1,
+            chunk_size=4,
+            n_action_steps=4,
+        )
+        image = PolicyFeature(type=FeatureType.VISUAL, shape=(3, 32, 32))
+        config.input_features = {
+            "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(12,)),
+            "observation.images.central": image,
+            "observation.images.left_arm_left_gripper": image,
+            "observation.images.right_arm_left_gripper": image,
+        }
+        config.output_features = {
+            "action": PolicyFeature(type=FeatureType.ACTION, shape=(12,))
+        }
+        return HarenaActCropPolicy(config)
+
+    def batch(self):
+        torch.manual_seed(0)
+        return {
+            "observation.state": torch.randn(2, 12),
+            "observation.images.central": torch.rand(2, 3, 32, 32),
+            "observation.images.left_arm_left_gripper": torch.rand(2, 3, 32, 32),
+            "observation.images.right_arm_left_gripper": torch.rand(2, 3, 32, 32),
+            "action": torch.randn(2, 4, 12),
+            "action_is_pad": torch.zeros(2, 4, dtype=torch.bool),
+        }
+
+    def test_off_by_default_keeps_one_backbone(self):
+        policy = self.policy(separate=False)
+        self.assertNotIn("model.backbone.tactile", dict(policy.named_modules()))
+
+    def test_each_camera_reaches_its_own_group_s_encoder(self):
+        policy = self.policy(separate=True)
+        router = policy.model.backbone
+        self.assertEqual(router.is_tactile, [False, True, True])
+        calls = []
+        router.overhead.register_forward_hook(lambda *a: calls.append("overhead"))
+        router.tactile.register_forward_hook(lambda *a: calls.append("tactile"))
+        loss, _ = policy.forward(self.batch())
+        loss.backward()
+        self.assertEqual(calls, ["overhead", "tactile", "tactile"])
+
+        # Both encoders learn, and from different images: their gradients differ.
+        def first(module):
+            return next(p for p in module.parameters() if p.requires_grad)
+
+        self.assertIsNotNone(first(router.overhead).grad)
+        self.assertIsNotNone(first(router.tactile).grad)
+        self.assertFalse(
+            torch.equal(first(router.overhead).grad, first(router.tactile).grad)
+        )
+
+    def test_both_encoders_take_the_backbone_learning_rate(self):
+        policy = self.policy(separate=True)
+        groups = policy.get_optim_params()
+        backbone = {id(p) for p in groups[1]["params"]}
+        tactile = {
+            id(p) for p in policy.model.backbone.tactile.parameters() if p.requires_grad
+        }
+        self.assertTrue(tactile and tactile <= backbone)
+
+    def test_a_turn_counter_left_mid_pass_is_reset(self):
+        policy = self.policy(separate=True)
+        policy.model.backbone._turn = 2
+        calls = []
+        policy.model.backbone.overhead.register_forward_hook(
+            lambda *a: calls.append("o")
+        )
+        policy.model.backbone.tactile.register_forward_hook(
+            lambda *a: calls.append("t")
+        )
+        policy.forward(self.batch())
+        self.assertEqual(calls, ["o", "t", "t"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,13 @@ class HarenaActCropConfig(HarenaActConfig):
     #: resizing applies -- the confound every cropping result in this work
     #: currently carries.
     tactile_resize: bool = True
+    #: Give the tactile cameras their own ResNet, shared among them, instead of
+    #: the one ACT passes every camera through. The overhead camera keeps the
+    #: twin's. Both start from the same pretrained weights, so the only change
+    #: is that a gel image no longer competes with a room view for one encoder.
+    #: False reproduces every checkpoint trained before the field existed. With
+    #: ``tactile_crop=[1.0,1.0]`` (no crop) it is the split-encoder ablation.
+    separate_tactile_backbone: bool = False
 
 
 # Registered under its former name as well, so a checkpoint written before this
