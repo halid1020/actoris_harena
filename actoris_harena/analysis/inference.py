@@ -60,16 +60,22 @@ def source_cameras(
     ``rename`` maps source key -> policy key, so it is inverted here. A camera
     the map does not mention is already named the same on both sides, which is
     every checkpoint that was not finetuned onto pretrained slots.
+
+    Under a rename map, a slot no camera was renamed onto is left out: it had
+    no camera in training either, and the policy pads it (pi0.5 trained on the
+    overhead camera alone fills ``base_0_rgb`` and pads both wrist slots).
     """
     inverse = {v: k for k, v in rename.items()}
     out = []
     for name in policy_cameras:
         key = CAMERA_PREFIX + name
+        if inverse and key not in inverse:
+            continue
         out.append(inverse.get(key, key)[len(CAMERA_PREFIX) :])
     return out
 
 
-def renamed_streams(streams: list, cameras: "list[str]") -> list:
+def renamed_streams(streams: list, rename: "dict[str, str]") -> list:
     """Report each camera under the rig's name, not the policy's slot name.
 
     A deck saying `base_0_rgb` names something the operator cannot point at; the
@@ -79,11 +85,12 @@ def renamed_streams(streams: list, cameras: "list[str]") -> list:
     """
     import dataclasses
 
-    out, i = [], 0
+    inverse = {v: k for k, v in rename.items()}
+    out = []
     for stream in streams:
-        if stream.kind == "camera" and i < len(cameras):
-            out.append(dataclasses.replace(stream, name=cameras[i]))
-            i += 1
+        if stream.kind == "camera" and stream.key in inverse:
+            name = inverse[stream.key][len(CAMERA_PREFIX) :]
+            out.append(dataclasses.replace(stream, name=name))
         else:
             out.append(stream)
     return out
@@ -141,7 +148,7 @@ class Inference:
         # them exactly as it did in training.
         self.rename = rename_map_of(self.pre)
         self.cameras = source_cameras(camera_names(self.cfg), self.rename)
-        self.streams = renamed_streams(streams_of(self.cfg), self.cameras)
+        self.streams = renamed_streams(streams_of(self.cfg), self.rename)
         self.action_dim = int(self.cfg.output_features["action"].shape[0])
         self.n_action_steps = int(getattr(self.cfg, "n_action_steps", 1) or 1)
         self.n_obs_steps = int(getattr(self.cfg, "n_obs_steps", 1) or 1)

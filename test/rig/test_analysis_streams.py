@@ -152,3 +152,43 @@ class TestWhatCountsAsAStream(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRenamedSlots(unittest.TestCase):
+    """A pi0.5 finetune names openpi's slots; the dataset names the rig's cameras."""
+
+    SLOTS = ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]
+    P = "observation.images."
+
+    def test_every_slot_filled_maps_back_in_slot_order(self):
+        from actoris_harena.analysis.inference import source_cameras
+
+        rename = {
+            self.P + "central": self.P + "base_0_rgb",
+            self.P + "left_arm_left_gripper": self.P + "left_wrist_0_rgb",
+            self.P + "right_arm_left_gripper": self.P + "right_wrist_0_rgb",
+        }
+        self.assertEqual(
+            source_cameras(self.SLOTS, rename),
+            ["central", "left_arm_left_gripper", "right_arm_left_gripper"],
+        )
+
+    def test_a_slot_no_camera_was_renamed_onto_is_not_asked_for(self):
+        from actoris_harena.analysis.inference import source_cameras
+
+        rename = {self.P + "central": self.P + "base_0_rgb"}
+        self.assertEqual(source_cameras(self.SLOTS, rename), ["central"])
+
+    def test_no_map_keeps_the_policys_own_names(self):
+        from actoris_harena.analysis.inference import source_cameras
+
+        self.assertEqual(source_cameras(CAMERAS, {}), CAMERAS)
+
+    def test_streams_are_renamed_by_key_and_a_padded_slot_keeps_its_name(self):
+        from actoris_harena.analysis.inference import renamed_streams
+        from actoris_harena.analysis.streams import Stream
+
+        streams = [Stream(s, "camera", self.P + s) for s in self.SLOTS]
+        rename = {self.P + "central": self.P + "base_0_rgb"}
+        names = [s.name for s in renamed_streams(streams, rename)]
+        self.assertEqual(names, ["central", "left_wrist_0_rgb", "right_wrist_0_rgb"])
