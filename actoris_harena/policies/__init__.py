@@ -38,6 +38,10 @@ from actoris_harena.policies.diffusion_crop.configuration_diffusion_crop import 
 from actoris_harena.policies.diffusion_crop.modeling_diffusion_crop import (
     HarenaDiffusionCropPolicy,
 )
+from actoris_harena.policies.dinovitac.configuration_dinovitac import (
+    HarenaDinovitacConfig,
+)
+from actoris_harena.policies.dinovitac.modeling_dinovitac import HarenaDinovitacPolicy
 from actoris_harena.policies.dreamzero.configuration_dreamzero import (
     HarenaDreamzeroConfig,
 )
@@ -96,6 +100,8 @@ __all__ = [
     "HarenaDiffusionCropConfig",
     "HarenaDiffusionCropPolicy",
     "HarenaDiffusionPolicy",
+    "HarenaDinovitacConfig",
+    "HarenaDinovitacPolicy",
     "HarenaDreamzeroConfig",
     "HarenaDreamzeroCropConfig",
     "HarenaDreamzeroCropPolicy",

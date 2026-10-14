@@ -178,6 +178,17 @@ POLICIES["harena_fastwam_predict"] = {
     "module": "actoris_harena.policies.fastwam_predict",
 }
 
+# DinoViTacFormer: ACT's CVAE reading a frozen DINOv2 (overhead) and a scratch
+# ResNet (fingertips), fused by ViTacFormer's bidirectional cross-attention, with
+# a tactile forecast. ACT's budget, so it compares with ACT; NOT a variant of it,
+# because its memory is not ACT's and a measured ceiling must not carry over.
+POLICIES["harena_dinovitac"] = {
+    **POLICIES["act"],
+    "local": True,
+    "ported_from": None,
+    "module": "actoris_harena.policies.dinovitac",
+}
+
 POLICY_NAMES = tuple(POLICIES)
 
 #: A repo-local policy and the LeRobot one it was ported from. Their checkpoints
