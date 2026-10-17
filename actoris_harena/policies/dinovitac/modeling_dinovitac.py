@@ -139,8 +139,9 @@ class DinoViTacACT(ACT):
         self.offsets = tuple(config.tactile_forecast_offsets)
 
         self.dino = dino if dino is not None else build_dino(config.dino_model_id)
-        self.dino.requires_grad_(False)
-        self.dino.eval()
+        if config.freeze_dino:
+            self.dino.requires_grad_(False)
+            self.dino.eval()
         self.vision_proj = nn.Linear(self.dino.config.hidden_size, d)
 
         # "Untrained": random initialisation, and GroupNorm because a scratch
@@ -156,23 +157,28 @@ class DinoViTacACT(ACT):
         # through one encoder would then be indistinguishable.
         self.camera_embed = nn.Embedding(len(self.image_keys), d)
 
+        # Built in the order the forecast-only model had, so that one seed gives
+        # the default configuration the same initialisation as before.
         layers = config.cross_attention_layers
-        self.fusion_forecast = CrossModalFusion(config, layers)
+        forecast = config.tactile_forecast
+        if forecast:
+            self.fusion_forecast = CrossModalFusion(config, layers)
         self.fusion_action = CrossModalFusion(config, layers)
 
-        forecast_config = copy.copy(config)
-        forecast_config.n_encoder_layers = config.forecast_encoder_layers
-        forecast_config.n_decoder_layers = 1
-        self.forecast_encoder = ACTEncoder(forecast_config)
-        self.forecast_decoder = ACTDecoder(forecast_config)
-        n_future = self.n_tactile * len(self.offsets)
-        h, w = config.tactile_forecast_size
-        signal = 3 * h * w
-        # One query per (fingertip, offset), fingertip-major.
-        self.forecast_queries = nn.Embedding(n_future, d)
-        self.forecast_head = nn.Linear(d, signal)
-        self.future_proj = nn.Linear(signal, d)
-        self.future_embed = nn.Embedding(n_future, d)
+        if forecast:
+            forecast_config = copy.copy(config)
+            forecast_config.n_encoder_layers = config.forecast_encoder_layers
+            forecast_config.n_decoder_layers = 1
+            self.forecast_encoder = ACTEncoder(forecast_config)
+            self.forecast_decoder = ACTDecoder(forecast_config)
+            n_future = self.n_tactile * len(self.offsets)
+            h, w = config.tactile_forecast_size
+            signal = 3 * h * w
+            # One query per (fingertip, offset), fingertip-major.
+            self.forecast_queries = nn.Embedding(n_future, d)
+            self.forecast_head = nn.Linear(d, signal)
+            self.future_proj = nn.Linear(signal, d)
+            self.future_embed = nn.Embedding(n_future, d)
 
         # Counts training forward passes, so the curriculum knows its phase; a
         # buffer, so a resumed run is restored into the phase it left.
@@ -183,18 +189,21 @@ class DinoViTacACT(ACT):
         self.register_buffer(
             "pixel_std", torch.tensor(IMAGENET_STD).view(1, 3, 1, 1), persistent=False
         )
+        forecast_parts = (
+            (self.forecast_encoder, self.forecast_decoder, self.fusion_forecast)
+            if forecast
+            else ()
+        )
         for p in chain(
-            self.forecast_encoder.parameters(),
-            self.forecast_decoder.parameters(),
-            self.fusion_forecast.parameters(),
-            self.fusion_action.parameters(),
+            *(m.parameters() for m in (*forecast_parts, self.fusion_action))
         ):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
     def train(self, mode: bool = True):
         super().train(mode)
-        self.dino.eval()  # frozen: never in training mode
+        if self.config.freeze_dino:
+            self.dino.eval()  # frozen: never in training mode
         return self
 
     # -- observation tokens --------------------------------------------------
@@ -210,7 +219,9 @@ class DinoViTacACT(ACT):
     def _vision_features(self, img: Tensor) -> Tensor:
         size = tuple(self.config.dino_image_size)
         x = F.interpolate(img, size=size, mode="bilinear", align_corners=False)
-        with torch.no_grad():
+        with torch.set_grad_enabled(
+            torch.is_grad_enabled() and not self.config.freeze_dino
+        ):
             out = self.dino(pixel_values=x).last_hidden_state
         skip = 1 + int(getattr(self.dino.config, "num_register_tokens", 0) or 0)
         patch = int(self.dino.config.patch_size)
@@ -273,6 +284,54 @@ class DinoViTacACT(ACT):
                 valid.append(~pad[:, 1 : 1 + len(self.offsets)].bool())
         return torch.cat(targets, dim=1), torch.cat(valid, dim=1)
 
+    def _forecast(
+        self,
+        batch: dict,
+        vision: Tensor,
+        touch: Tensor,
+        vision_pos: Tensor,
+        touch_pos: Tensor,
+        one_d_tokens: Tensor,
+        one_d_pos: Tensor,
+    ) -> "tuple[Tensor, Tensor, dict]":
+        """Pass 1: forecast the future tactile signals, and choose what pass 2 reads.
+
+        Returns the future-signal tokens and their positions, and ``extras``:
+        the forecast, and its targets when the batch carries future frames.
+        """
+        config = self.config
+        batch_size, device = touch.shape[1], touch.device
+        fused, fused_pos = self.fusion_forecast(vision, touch, vision_pos, touch_pos)
+        tokens = torch.cat([one_d_tokens, fused])
+        pos = torch.cat([one_d_pos, fused_pos])
+        memory = self.forecast_encoder(tokens, pos_embed=pos)
+        queries = self.forecast_queries.weight.unsqueeze(1)
+        decoded = self.forecast_decoder(
+            torch.zeros(
+                (queries.shape[0], batch_size, config.dim_model),
+                dtype=pos.dtype,
+                device=device,
+            ),
+            memory,
+            encoder_pos_embed=pos,
+            decoder_pos_embed=queries,
+        )
+        forecast = self.forecast_head(decoded).transpose(0, 1)  # (B, n_future, signal)
+
+        # The curriculum: the truth while it lasts, in training only.
+        extras: dict = {"forecast": forecast}
+        truth = self.future_signals(batch) if self.training else None
+        if truth is not None:
+            extras["target"], extras["valid"] = truth
+        signal = forecast
+        if truth is not None and int(self.train_steps) < config.curriculum_steps:
+            signal = truth[0]
+        if self.training:
+            self.train_steps += 1
+
+        future = self.future_proj(signal).transpose(0, 1)  # (n_future, B, D)
+        return future, self.future_embed.weight.unsqueeze(1), extras
+
     # -- the forward pass ------------------------------------------------------
 
     def forward(self, batch: "dict[str, Tensor]"):  # type: ignore[override]
@@ -333,45 +392,17 @@ class DinoViTacACT(ACT):
         one_d_pos = self.encoder_1d_feature_pos_embed.weight.unsqueeze(1)  # (n, 1, D)
 
         vision, vision_pos, touch, touch_pos = self.observation_tokens(present)
+        extras: dict = {}
+        if config.tactile_forecast:
+            future, future_pos, extras = self._forecast(
+                batch, vision, touch, vision_pos, touch_pos, one_d_tokens, one_d_pos
+            )
+            # The action pass reads the future signals as further touch tokens.
+            touch = torch.cat([touch, future])
+            touch_pos = torch.cat([touch_pos, future_pos])
 
-        # Pass 1: forecast the future tactile signals.
-        fused, fused_pos = self.fusion_forecast(vision, touch, vision_pos, touch_pos)
-        tokens = torch.cat([one_d_tokens, fused])
-        pos = torch.cat([one_d_pos, fused_pos])
-        memory = self.forecast_encoder(tokens, pos_embed=pos)
-        queries = self.forecast_queries.weight.unsqueeze(1)
-        decoded = self.forecast_decoder(
-            torch.zeros(
-                (queries.shape[0], batch_size, config.dim_model),
-                dtype=pos.dtype,
-                device=device,
-            ),
-            memory,
-            encoder_pos_embed=pos,
-            decoder_pos_embed=queries,
-        )
-        forecast = self.forecast_head(decoded).transpose(0, 1)  # (B, n_future, signal)
-
-        # The curriculum: the truth while it lasts, in training only.
-        extras: dict = {"forecast": forecast}
-        truth = self.future_signals(batch) if self.training else None
-        if truth is not None:
-            extras["target"], extras["valid"] = truth
-        signal = forecast
-        if truth is not None and int(self.train_steps) < config.curriculum_steps:
-            signal = truth[0]
-        if self.training:
-            self.train_steps += 1
-
-        # Pass 2: the action, reading the future signals as touch tokens.
-        future = self.future_proj(signal).transpose(0, 1)  # (n_future, B, D)
-        future_pos = self.future_embed.weight.unsqueeze(1)
-        fused, fused_pos = self.fusion_action(
-            vision,
-            torch.cat([touch, future]),
-            vision_pos,
-            torch.cat([touch_pos, future_pos]),
-        )
+        # The action pass.
+        fused, fused_pos = self.fusion_action(vision, touch, vision_pos, touch_pos)
         encoder_in_tokens = torch.cat([one_d_tokens, fused])
         encoder_in_pos_embed = torch.cat([one_d_pos, fused_pos])
         encoder_out = self.encoder(encoder_in_tokens, pos_embed=encoder_in_pos_embed)

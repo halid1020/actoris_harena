@@ -200,6 +200,42 @@ class TrainingTest(unittest.TestCase):
         torch.testing.assert_close(extras["target"][:, 3], expected.flatten(1))
 
 
+class AblationTest(unittest.TestCase):
+    def test_an_unfrozen_dinov2_is_trained_and_optimised(self):
+        policy = make_policy(freeze_dino=False)
+        policy.train()
+        self.assertTrue(policy.model.dino.training)
+        loss, _ = policy.forward(training_batch())
+        loss.backward()
+        # The mask token serves only DINOv2's masked pretraining.
+        grads = [
+            p.grad
+            for n, p in policy.model.dino.named_parameters()
+            if n != "embeddings.mask_token"
+        ]
+        self.assertTrue(all(g is not None for g in grads))
+        optimised = {id(p) for g in policy.get_optim_params() for p in g["params"]}
+        self.assertTrue({id(p) for p in policy.model.dino.parameters()} <= optimised)
+
+    def test_without_a_forecast_it_reads_the_present_only(self):
+        config = make_config(tactile_forecast=False)
+        self.assertIsNone(config.observation_delta_indices)
+        policy = make_policy(tactile_forecast=False)
+        self.assertFalse(hasattr(policy.model, "forecast_head"))
+        self.assertFalse(hasattr(policy.model, "fusion_forecast"))
+        policy.train()
+        loss, logged = policy.forward(
+            present(training_batch())
+            | {"action_is_pad": torch.zeros(2, 4, dtype=torch.bool)}
+        )
+        self.assertEqual(set(logged), {"l1_loss", "kld_loss"})
+        loss.backward()
+        policy.reset()
+        self.assertEqual(
+            tuple(policy.select_action(present(training_batch())).shape), (2, 12)
+        )
+
+
 class CurriculumTest(unittest.TestCase):
     def actions(self, policy, batch, step):
         policy.model.train_steps.fill_(step)

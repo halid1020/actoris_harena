@@ -46,8 +46,11 @@ class HarenaDinovitacConfig(HarenaActCropConfig):
     #: not fetch ImageNet weights first.
     pretrained_backbone_weights: str | None = None
 
-    #: The overhead camera's encoder, a Hugging Face DINOv2. Frozen.
+    #: The overhead camera's encoder, a Hugging Face DINOv2.
     dino_model_id: str = "facebook/dinov2-small"
+    #: False finetunes DINOv2 instead, at ``optimizer_lr`` as ACT finetunes its
+    #: ResNet; its input keeps the ImageNet statistics it was pretrained on.
+    freeze_dino: bool = True
     #: The size the overhead image is resized to before DINOv2. Both must be
     #: multiples of its 14-pixel patch: 224x294 is 16x21 = 336 tokens, about the
     #: 4:3 of the camera.
@@ -58,6 +61,9 @@ class HarenaDinovitacConfig(HarenaActCropConfig):
     #: "w/o CrossAtten" ablation.
     cross_attention_layers: int = 2
 
+    #: False drops the forecast altogether -- its pass, its tokens, its loss and
+    #: the curriculum -- so the action pass reads the present fingertips only.
+    tactile_forecast: bool = True
     #: Frames ahead whose tactile images are forecast; 10 and 20 are 0.33 and
     #: 0.67 s at the rig's 30 fps. They also become the dataset's observation window.
     tactile_forecast_offsets: tuple[int, ...] = (10, 20)
@@ -81,7 +87,9 @@ class HarenaDinovitacConfig(HarenaActCropConfig):
                     f"dino_image_size must be multiples of DINOv2's 14-pixel patch, "
                     f"got {self.dino_image_size}"
                 )
-        if not self.tactile_forecast_offsets or min(self.tactile_forecast_offsets) < 1:
+        if self.tactile_forecast and (
+            not self.tactile_forecast_offsets or min(self.tactile_forecast_offsets) < 1
+        ):
             raise ValueError(
                 "tactile_forecast_offsets must name at least one frame ahead, got "
                 f"{self.tactile_forecast_offsets}"
@@ -100,11 +108,13 @@ class HarenaDinovitacConfig(HarenaActCropConfig):
             )
 
     @property
-    def observation_delta_indices(self) -> list:
-        """The present, then each forecast offset.
+    def observation_delta_indices(self) -> "list | None":
+        """The present, then each forecast offset; the present alone without a forecast.
 
         LeRobot applies this to EVERY observation key, so the overhead camera
         and the state arrive with the same time axis; the model reads frame 0
         of them and the later frames of the fingertips only as targets.
         """
+        if not self.tactile_forecast:
+            return None
         return [0, *self.tactile_forecast_offsets]
